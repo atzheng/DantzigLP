@@ -1,7 +1,7 @@
 using StatsBase, Gadfly, DataFrames
 
 
-m = 10000
+m = 1000
 n = 100
 X, y, actual = generate_regression_example(10, m, 0.2)
 X
@@ -11,7 +11,11 @@ actual
 
 
 bl_model, bl_fit = baseline_regression(y, X)
-@profile cg_model, cg_fit = colgen_regression(y, X)
+
+delta = 6
+bd_model, bd_fit = DantzigLP.dantzig_lp(y, X, delta, :simple)
+cg_model, cg_fit = DantzigLP.dantzig_lp(y, X, delta, :column_generation)
+
 
 bl_fit - cg_fit
 
