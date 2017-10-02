@@ -35,7 +35,9 @@ function baseline_dantzig(y, X, delta = 6)
 end
 
 
-function colgen_dantzig(y, X, delta = 6)
+function colgen_dantzig(y, X, delta = 6;
+                        generate_constraints = true,
+                        generate_columns = true)
     # TODO difference between custom and standard lasso solns?
     # Initialize model
     # --------------------------------------------------------------------------
@@ -48,19 +50,24 @@ function colgen_dantzig(y, X, delta = 6)
 
     abs_beta_pos = @variable(model, [1:p], lowerbound = 0)
     abs_beta_neg = @variable(model, [1:p], lowerbound = 0)
-
-    linf_pos_constrs = @constraint(model, Xty .<= delta)
-    linf_neg_constrs = @constraint(model, Xty .>= -delta)
     abs_beta_constrs = @constraint(model, abs_beta_pos - abs_beta_neg .== 0)
-    all_constrs = vcat(linf_pos_constrs, linf_neg_constrs, abs_beta_constrs)
+
+    constraints = []
+    constraint_indices = []
+    betas = []
+    beta_indices = []
+
+    if generate_constraints == false
+        linf_pos_constrs = @constraint(model, Xty .<= delta)
+        linf_neg_constrs = @constraint(model, Xty .>= -delta)
+        append!(constraints, vcat(linf_pos_constrs, linf_neg_constrs))
+        constraint_indices = vcat(1:p, 1:p)
+    end
 
     obj = @objective(model, Min, sum(abs_beta_pos + abs_beta_neg))
 
     # Generate BFS from lasso solution
     # --------------------------------------------------------------------------
-    betas = []
-    beta_indices = []
-
     """
     Closure to add new beta variables to the model.
     WARNING: mutates betas and beta_indices.
@@ -72,11 +79,9 @@ function colgen_dantzig(y, X, delta = 6)
             new_var = @variable(
                 model,
                 objective = 0,
-                inconstraints = vcat(linf_pos_constrs,
-                                     linf_neg_constrs,
+                inconstraints = vcat(constraints,
                                      [abs_beta_constrs[idx]]),
-                coefficients = full(vcat(-XtX[:, idx],
-                                         -XtX[:, idx],
+                coefficients = full(vcat(-XtX[constraint_indices, idx],
                                          [-1.0])))
             push!(beta_indices, idx)
             push!(betas, new_var)
@@ -88,28 +93,42 @@ function colgen_dantzig(y, X, delta = 6)
     # lasso_soln = fit(LassoPath, X, y, λ = [delta], maxncoef = p).coefs
     lasso_soln = sparse(Lasso_soln_delta(y, X, delta))
     for (idx, beta) in enumerate(lasso_soln)
-        if beta != 0
+        if beta != 0 || generate_columns == false
             new_var = add_beta(idx)
             setvalue(new_var, beta)
         end
     end
 
 
-    # Column generation
+    # Column / constraint generation
     # --------------------------------------------------------------------------
     solve(model)
     status = :InProgress
     i = 1
-    while status == :InProgress
-        new_var_index = generate_column(model, XtX, beta_indices)
-        if new_var_index == nothing
-            status = :Optimal
-        else
-            @printf("**Column generation iteration %d: adding beta %d**\n",
-                    i, new_var_index)
-            new_var = add_beta(new_var_index)
-            solve(model)
-            i = i + 1
+    while (status == :InProgress) && (generate_columns || generate_constraints)
+        # --- Constraint generation ---
+        if generate_constraints
+            new_constrs = generate_constraints(
+                model, Xty, XtX, betas, beta_indices, delta)
+            while size(new_constrs) > 0
+                solve(model)
+                new_constrs = generate_constraints(
+                    model, Xty, XtX, betas, beta_indices, delta)
+            end
+        end
+
+        # --- Column generation ---
+        if generate_columns
+            new_var_index = generate_column(model, XtX, beta_indices)
+            if new_var_index == nothing
+                status = :Optimal
+            else
+                @printf("**Column generation iteration %d: adding beta %d**\n",
+                        i, new_var_index)
+                new_var = add_beta(new_var_index)
+                solve(model)
+                i = i + 1
+            end
         end
     end
 
@@ -123,12 +142,10 @@ end
 
 
 function generate_column(model, XtX, beta_indices)
-    TOL = 1e-16  # Numerical tolerance TODO How to set this?
+    TOL = 1e-12  # Numerical tolerance TODO How to set this?
     I_p = speye(size(XtX)[1])
 
-    imodel = internalmodel(model)
-    p = MathProgBase.getconstrduals(imodel)
-    red_costs = - transpose(p) * vcat(XtX, -XtX, -I_p)
+    red_costs = - transpose(model.linconstrDuals) * vcat(-XtX, -XtX, -I_p)
     red_costs[beta_indices] = Inf
     min_index = indmin(red_costs)
 
@@ -140,24 +157,44 @@ function generate_column(model, XtX, beta_indices)
 end
 
 
+function generate_constraints(model, Xty, XtX, beta_vars, beta_indices, delta)
+    constraint_val = Xty - XtX * getvalue(beta_vars)
+    new_constrs = []
+    for (row, val) in enumerate(constraint_status)
+        if val < -delta
+            new_constr = @constraint(
+                model,
+                Xty[row] - dot(XtX[row, beta_indices], beta_vars) >= -delta)
+            push!(new_constrs, new_constrs)
+        elseif val > delta
+            new_constr = @constraint(
+                model,
+                Xty[row] - dot(XtX[row, beta_indices], beta_vars) <= delta)
+            push!(new_constrs, new_constrs)
+        end
+    end
+    return new_constrs
+end
+
+
 function Lasso_soln_delta(Y, X, delta, TOL=0.0001, maxiter=10000)
-    n,p = size(X);
+    n,p = size(X)
     aa= svds(X,nsv=1,ritzvec=false)[1]
     Lip = aa.S[1]
     Lip = Lip^2
 
-    betak = zeros(p,1);
-    grad = -X'*(Y - X*betak);
-    err=0;
+    betak = zeros(p,1)
+    grad = -X'*(Y - X*betak)
+    err=0
 
     for iter in 1:maxiter
-        betakold = betak;
-        betak = betak - grad/Lip;
-        betak = sign.(betak) .* max(abs(betak) - delta/Lip, 0);
-        err = norm(betak - betakold,Inf);
-        grad = -X'*(Y - X*betak);
+        betakold = betak
+        betak = betak - grad/Lip
+        betak = sign.(betak) .* max(abs(betak) - delta/Lip, 0)
+        err = norm(betak - betakold,Inf)
+        grad = -X'*(Y - X*betak)
         if (err < TOL)
-            break;
+            break
         end
     end
     warn("Lasso solution did not converge within maxiter.")
