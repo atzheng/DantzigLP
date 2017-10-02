@@ -36,8 +36,8 @@ end
 
 
 function colgen_dantzig(y, X, delta = 6;
-                        generate_constraints = true,
-                        generate_columns = true)
+                        constraint_generation = true,
+                        column_generation = true)
     # TODO difference between custom and standard lasso solns?
     # Initialize model
     # --------------------------------------------------------------------------
@@ -52,17 +52,21 @@ function colgen_dantzig(y, X, delta = 6;
     abs_beta_neg = @variable(model, [1:p], lowerbound = 0)
     abs_beta_constrs = @constraint(model, abs_beta_pos - abs_beta_neg .== 0)
 
-    constraints = []
-    constraint_indices = []
     betas = []
     beta_indices = []
 
-    if generate_constraints == false
-        linf_pos_constrs = @constraint(model, Xty .<= delta)
-        linf_neg_constrs = @constraint(model, Xty .>= -delta)
-        append!(constraints, vcat(linf_pos_constrs, linf_neg_constrs))
-        constraint_indices = vcat(1:p, 1:p)
+    # --- Initialize constraints ---
+    if constraint_generation == false
+        init_constrs = 1:p
+    else
+        # initialize with random constraints
+        init_constrs = unique(sample(1:p, 10))
     end
+
+    linf_pos_constrs = @constraint(model, Xty[init_constrs] .<= delta)
+    linf_neg_constrs = @constraint(model, Xty[init_constrs] .>= -delta)
+    constraints = vcat(linf_pos_constrs, linf_neg_constrs)
+    constraint_indices = vcat(init_constrs, init_constrs)
 
     obj = @objective(model, Min, sum(abs_beta_pos + abs_beta_neg))
 
@@ -93,7 +97,7 @@ function colgen_dantzig(y, X, delta = 6;
     # lasso_soln = fit(LassoPath, X, y, λ = [delta], maxncoef = p).coefs
     lasso_soln = sparse(Lasso_soln_delta(y, X, delta))
     for (idx, beta) in enumerate(lasso_soln)
-        if beta != 0 || generate_columns == false
+        if beta != 0 || column_generation == false
             new_var = add_beta(idx)
             setvalue(new_var, beta)
         end
@@ -105,26 +109,37 @@ function colgen_dantzig(y, X, delta = 6;
     solve(model)
     status = :InProgress
     i = 1
-    while (status == :InProgress) && (generate_columns || generate_constraints)
+    while ((status == :InProgress) &&
+           (column_generation || constraint_generation))
+
         # --- Constraint generation ---
-        if generate_constraints
-            new_constrs = generate_constraints(
-                model, Xty, XtX, betas, beta_indices, delta)
-            while size(new_constrs) > 0
+        if constraint_generation
+            new_constrs, new_constr_indices = generate_constraints(
+                model, Xty, XtX, betas, beta_indices, delta, constraint_indices)
+            info("Generating new constraints: $new_constr_indices")
+            append!(constraints, new_constrs)
+            append!(constraint_indices, new_constr_indices)
+
+            while length(new_constrs) > 0
                 solve(model)
-                new_constrs = generate_constraints(
-                    model, Xty, XtX, betas, beta_indices, delta)
+                new_constrs, new_constr_indices = generate_constraints(
+                    model, Xty, XtX, betas, beta_indices, delta,
+                    constraint_indices)
+                append!(constraints, new_constrs)
+                append!(constraint_indices, new_constr_indices)
+                info("Generating new constraints: $new_constr_indices")
             end
         end
 
         # --- Column generation ---
-        if generate_columns
-            new_var_index = generate_column(model, XtX, beta_indices)
+        if column_generation
+            new_var_index =
+                generate_column(model, XtX, beta_indices, constraint_indices)
             if new_var_index == nothing
                 status = :Optimal
             else
-                @printf("**Column generation iteration %d: adding beta %d**\n",
-                        i, new_var_index)
+                info("Column generation iteration $i:"
+                     * "adding beta $new_var_index")
                 new_var = add_beta(new_var_index)
                 solve(model)
                 i = i + 1
@@ -141,11 +156,13 @@ function colgen_dantzig(y, X, delta = 6;
 end
 
 
-function generate_column(model, XtX, beta_indices)
+function generate_column(model, XtX, beta_indices, constraint_indices)
     TOL = 1e-12  # Numerical tolerance TODO How to set this?
     I_p = speye(size(XtX)[1])
 
-    red_costs = - transpose(model.linconstrDuals) * vcat(-XtX, -XtX, -I_p)
+    red_costs = - transpose(model.linconstrDuals) *
+        vcat(-XtX[constraint_indices, :], -I_p)
+
     red_costs[beta_indices] = Inf
     min_index = indmin(red_costs)
 
@@ -157,23 +174,31 @@ function generate_column(model, XtX, beta_indices)
 end
 
 
-function generate_constraints(model, Xty, XtX, beta_vars, beta_indices, delta)
-    constraint_val = Xty - XtX * getvalue(beta_vars)
+function generate_constraints(model, Xty, XtX, beta_vars, beta_indices, delta,
+                              existing_constraints)
+    TOL = 1e-11
+    constraint_values = Xty - XtX[:, beta_indices] * getvalue(beta_vars)
     new_constrs = []
-    for (row, val) in enumerate(constraint_status)
-        if val < -delta
+    new_constr_indices = []
+
+    for (row, val) in enumerate(constraint_values)
+        if val < -delta - TOL
+            info("Constraint violated! val = $val")
             new_constr = @constraint(
                 model,
                 Xty[row] - dot(XtX[row, beta_indices], beta_vars) >= -delta)
-            push!(new_constrs, new_constrs)
-        elseif val > delta
+            push!(new_constrs, new_constr)
+            push!(new_constr_indices, row)
+        elseif val > delta + TOL
+            info("Constraint violated! val = $val")
             new_constr = @constraint(
                 model,
                 Xty[row] - dot(XtX[row, beta_indices], beta_vars) <= delta)
-            push!(new_constrs, new_constrs)
+            push!(new_constrs, new_constr)
+            push!(new_constr_indices, row)
         end
     end
-    return new_constrs
+    return new_constrs, new_constr_indices
 end
 
 
