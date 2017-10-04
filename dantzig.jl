@@ -13,19 +13,19 @@ end
 
 
 """Baseline solution"""
-function baseline_dantzig(y, X, delta = 6)
+function baseline_dantzig(y, X, delta)
     n, p = size(X)
-    Xty = transpose(X) * y
-    XtX = transpose(X) * X
 
     model = Model(solver = GurobiSolver())
 
     Beta = @variable(model, [1:p])
+    residuals = @variable(model, [1:n])
     abs_beta_pos = @variable(model, [1:p], lowerbound = 0)
     abs_beta_neg = @variable(model, [1:p], lowerbound = 0)
 
-    linf_pos_constrs = @constraint(model, Xty - XtX * Beta .<= delta)
-    linf_neg_constrs = @constraint(model, Xty - XtX * Beta .>= -delta)
+    residual_constrs = @constraint(model, y - X * Beta .== residuals)
+    linf_pos_constrs = @constraint(model, X' * residuals .<= delta)
+    linf_neg_constrs = @constraint(model, X' * residuals .>= -delta)
     abs_beta_constrs = @constraint(model, abs_beta_pos - abs_beta_neg .== Beta)
 
     obj = @objective(model, Min, sum(abs_beta_pos + abs_beta_neg))
@@ -35,7 +35,7 @@ function baseline_dantzig(y, X, delta = 6)
 end
 
 
-function colgen_dantzig(y, X, delta = 6;
+function colgen_dantzig(y, X, delta;
                         constraint_generation = true,
                         column_generation = true)
     # TODO difference between custom and standard lasso solns?
@@ -55,12 +55,16 @@ function colgen_dantzig(y, X, delta = 6;
     betas = []
     beta_indices = []
 
+    info("Fitting Lasso solution...")
+    # lasso_soln = vec(fit(LassoPath, X, y, λ = [delta], maxncoef = p).coefs)
+    lasso_soln = sparse(vec(Lasso_soln_delta(y, X, delta)))
+
     # --- Initialize constraints ---
     if constraint_generation == false
         init_constrs = 1:p
     else
         # initialize with random constraints
-        init_constrs = unique(sample(1:p, 10))
+        init_constrs = lasso_soln.nzind
     end
 
     linf_pos_constrs = @constraint(model, Xty[init_constrs] .<= delta)
@@ -93,9 +97,6 @@ function colgen_dantzig(y, X, delta = 6;
         end
     end
 
-    info("Fitting Lasso solution...")
-    # lasso_soln = fit(LassoPath, X, y, λ = [delta], maxncoef = p).coefs
-    lasso_soln = sparse(Lasso_soln_delta(y, X, delta))
     for (idx, beta) in enumerate(lasso_soln)
         if beta != 0 || column_generation == false
             new_var = add_beta(idx)
@@ -144,6 +145,8 @@ function colgen_dantzig(y, X, delta = 6;
                 solve(model)
                 i = i + 1
             end
+        else
+            status = :Optimal
         end
     end
 
@@ -152,7 +155,7 @@ function colgen_dantzig(y, X, delta = 6;
         beta_values[i] = getvalue(var)
     end
 
-    return (model, beta_values)
+    return (model, beta_values, lasso_soln)
 end
 
 
@@ -166,6 +169,8 @@ function generate_column(model, XtX, beta_indices, constraint_indices)
     red_costs[beta_indices] = Inf
     min_index = indmin(red_costs)
 
+    info(red_costs[min_index])
+
     if red_costs[min_index] < -TOL
         return min_index
     else
@@ -175,13 +180,16 @@ end
 
 
 function generate_constraints(model, Xty, XtX, beta_vars, beta_indices, delta,
-                              existing_constraints)
+                              existing_constraints, max_constraints = 10)
     TOL = 1e-11
     constraint_values = Xty - XtX[:, beta_indices] * getvalue(beta_vars)
+    constraint_indices = sortperm(abs(constraint_values), rev = true)
+
     new_constrs = []
     new_constr_indices = []
 
-    for (row, val) in enumerate(constraint_values)
+    for row in constraint_indices[1:max_constraints]
+        val = constraint_values[row]
         if val < -delta - TOL
             info("Constraint violated! val = $val")
             new_constr = @constraint(
