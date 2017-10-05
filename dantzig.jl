@@ -23,10 +23,10 @@ function baseline_dantzig(y, X, delta)
     abs_beta_pos = @variable(model, [1:p], lowerbound = 0)
     abs_beta_neg = @variable(model, [1:p], lowerbound = 0)
 
+    abs_beta_constrs = @constraint(model, abs_beta_pos - abs_beta_neg .== Beta)
     residual_constrs = @constraint(model, y - X * Beta .== residuals)
     linf_pos_constrs = @constraint(model, X' * residuals .<= delta)
     linf_neg_constrs = @constraint(model, X' * residuals .>= -delta)
-    abs_beta_constrs = @constraint(model, abs_beta_pos - abs_beta_neg .== Beta)
 
     obj = @objective(model, Min, sum(abs_beta_pos + abs_beta_neg))
 
@@ -42,35 +42,36 @@ function colgen_dantzig(y, X, delta;
     # Initialize model
     # --------------------------------------------------------------------------
     n, p = size(X)
-    Xty = transpose(X) * y
-    XtX = transpose(X) * X
     I_p = speye(p)
 
-    model = Model(solver = GurobiSolver())
+    model = Model(solver = GurobiSolver(Method=1))
 
     abs_beta_pos = @variable(model, [1:p], lowerbound = 0)
     abs_beta_neg = @variable(model, [1:p], lowerbound = 0)
+    residuals = @variable(model, [1:n])
+
     abs_beta_constrs = @constraint(model, abs_beta_pos - abs_beta_neg .== 0)
+    residual_constrs = @constraint(model, y - residuals .== 0)
 
     betas = []
     beta_indices = []
 
     info("Fitting Lasso solution...")
-    # lasso_soln = vec(fit(LassoPath, X, y, λ = [delta], maxncoef = p).coefs)
-    lasso_soln = sparse(vec(Lasso_soln_delta(y, X, delta)))
+    lasso_soln = vec(fit(LassoPath, X, y, λ = [delta], maxncoef = p).coefs)
+    # lasso_soln = sparse(vec(Lasso_soln_delta(y, X, delta)))
 
     # --- Initialize constraints ---
     if constraint_generation == false
         init_constrs = 1:p
     else
-        # initialize with random constraints
+        # initialize with constraints from Lasso support
         init_constrs = lasso_soln.nzind
     end
 
-    linf_pos_constrs = @constraint(model, Xty[init_constrs] .<= delta)
-    linf_neg_constrs = @constraint(model, Xty[init_constrs] .>= -delta)
-    constraints = vcat(linf_pos_constrs, linf_neg_constrs)
-    constraint_indices = vcat(init_constrs, init_constrs)
+    linf_pos_constrs =
+        @constraint(model, X'[init_constrs, :] * residuals .<= delta)
+    linf_pos_constrs =
+        @constraint(model, X'[init_constrs, :] * residuals .>= -delta)
 
     obj = @objective(model, Min, sum(abs_beta_pos + abs_beta_neg))
 
@@ -87,10 +88,8 @@ function colgen_dantzig(y, X, delta;
             new_var = @variable(
                 model,
                 objective = 0,
-                inconstraints = vcat(constraints,
-                                     [abs_beta_constrs[idx]]),
-                coefficients = full(vcat(-XtX[constraint_indices, idx],
-                                         [-1.0])))
+                inconstraints = vcat(residual_constrs, [abs_beta_constrs[idx]]),
+                coefficients = full(vcat(-X[:, idx], [-1.0])))
             push!(beta_indices, idx)
             push!(betas, new_var)
             return new_var
@@ -115,27 +114,16 @@ function colgen_dantzig(y, X, delta;
 
         # --- Constraint generation ---
         if constraint_generation
-            new_constrs, new_constr_indices = generate_constraints(
-                model, Xty, XtX, betas, beta_indices, delta, constraint_indices)
-            info("Generating new constraints: $new_constr_indices")
-            append!(constraints, new_constrs)
-            append!(constraint_indices, new_constr_indices)
-
+            new_constrs = generate_constraints(model, delta, X, residuals)
             while length(new_constrs) > 0
                 solve(model)
-                new_constrs, new_constr_indices = generate_constraints(
-                    model, Xty, XtX, betas, beta_indices, delta,
-                    constraint_indices)
-                append!(constraints, new_constrs)
-                append!(constraint_indices, new_constr_indices)
-                info("Generating new constraints: $new_constr_indices")
+                new_constrs = generate_constraints(model, delta, X, residuals)
             end
         end
 
         # --- Column generation ---
         if column_generation
-            new_var_index =
-                generate_column(model, XtX, beta_indices, constraint_indices)
+            new_var_index = generate_column(model, X, beta_indices)
             if new_var_index == nothing
                 status = :Optimal
             else
@@ -159,16 +147,12 @@ function colgen_dantzig(y, X, delta;
 end
 
 
-function generate_column(model, XtX, beta_indices, constraint_indices)
-    TOL = 1e-12  # Numerical tolerance TODO How to set this?
-    I_p = speye(size(XtX)[1])
-
-    red_costs = - transpose(model.linconstrDuals) *
-        vcat(-XtX[constraint_indices, :], -I_p)
-
+function generate_column(model, X, beta_indices)
+    TOL = 1e-12
+    red_costs = get_reduced_costs(model, X)
     red_costs[beta_indices] = Inf
-    min_index = indmin(red_costs)
 
+    min_index = indmin(red_costs)
     info(red_costs[min_index])
 
     if red_costs[min_index] < -TOL
@@ -179,34 +163,36 @@ function generate_column(model, XtX, beta_indices, constraint_indices)
 end
 
 
-function generate_constraints(model, Xty, XtX, beta_vars, beta_indices, delta,
-                              existing_constraints, max_constraints = 10)
-    TOL = 1e-11
-    constraint_values = Xty - XtX[:, beta_indices] * getvalue(beta_vars)
+function get_reduced_costs(model, X)
+    n, p = size(X)
+    I_p = speye(p)
+    - transpose(model.linconstrDuals[1:p + n]) * vcat(-I_p, -X)
+    return - transpose(model.linconstrDuals[1:p + n]) * vcat(-I_p, -X)
+end
+
+
+function generate_constraints(model, delta, X, residuals, max_constraints = 50)
+    Xt = X'
+    TOL = 1e-6
+    constraint_values = Xt * getvalue(residuals)
     constraint_indices = sortperm(abs(constraint_values), rev = true)
 
     new_constrs = []
-    new_constr_indices = []
 
     for row in constraint_indices[1:max_constraints]
         val = constraint_values[row]
         if val < -delta - TOL
             info("Constraint violated! val = $val")
-            new_constr = @constraint(
-                model,
-                Xty[row] - dot(XtX[row, beta_indices], beta_vars) >= -delta)
+            new_constr =
+                @constraint(model, dot(Xt[row, :], residuals) >= -delta)
             push!(new_constrs, new_constr)
-            push!(new_constr_indices, row)
         elseif val > delta + TOL
             info("Constraint violated! val = $val")
-            new_constr = @constraint(
-                model,
-                Xty[row] - dot(XtX[row, beta_indices], beta_vars) <= delta)
+            new_constr = @constraint(model, dot(Xt[row, :], residuals) <= delta)
             push!(new_constrs, new_constr)
-            push!(new_constr_indices, row)
         end
     end
-    return new_constrs, new_constr_indices
+    return new_constrs
 end
 
 
