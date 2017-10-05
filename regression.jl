@@ -4,16 +4,16 @@ using JuMP, Gurobi, MathProgBase
 """
 Generate test regression problems. TODO Add D matrix somehow
 """
-function generate_regression_example(n_observations,
-                                     n_coefficients,
-                                     density)
-    X = randn(n_observations, n_coefficients)
+function generate_regression_example(n, p, density, SNR=10, binary=false)
+    if binary
+        X = round(rand(n, p))
+    else
+        X_unnorm = randn(n, p)
+        X = hcat([X_unnorm[:, j] / norm(X_unnorm[:, j], 2) for j in 1:p]...)
+    end
 
-    true_coeffs =
-        round.(Int, rand(n_coefficients) .<= density) .*
-        rand(n_coefficients) .* 10
-
-    y = X * true_coeffs + randn(n_observations)
+    true_coeffs = round.(Int, rand(p) .<= density) .* rand(p) .* 10
+    y = X * true_coeffs + randn(n) * var(X * true_coeffs) / SNR
 
     return X, y, true_coeffs
 end
