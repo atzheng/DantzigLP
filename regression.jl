@@ -9,7 +9,7 @@ function generate_regression_example(n, p, density, SNR=10, binary=false)
         X = round(rand(n, p))
     else
         X_unnorm = randn(n, p)
-        X = hcat([X_unnorm[:, j] / norm(X_unnorm[:, j], 2) for j in 1:p]...)
+        X = mapslices(x -> x / norm(x, 2), X_unnorm, [1])
     end
 
     true_coeffs = round.(Int, rand(p) .<= density) .* rand(p) .* 10
