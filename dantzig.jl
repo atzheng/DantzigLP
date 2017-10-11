@@ -2,18 +2,11 @@ module DantzigLP
 using JuMP, Gurobi, MathProgBase, Lasso
 
 
-function dantzig_lp(y, X, delta, method)
-    if method == :column_generation
-        return colgen_dantzig(y, X, delta)
-    elseif method == :simple
-        return baseline_dantzig(y, X, delta)
-    else
-        error("Unrecognized Dantzig solution method.")
-    end
-end
-
-
-"""Baseline solution"""
+"""
+Baseline solution. Mainly for testing.
+Under normal conditions, should be identical to dantzig_lp with
+column / constraint generation disabled.
+"""
 function baseline_dantzig(y, X, delta)
     n, p = size(X)
 
@@ -36,9 +29,9 @@ function baseline_dantzig(y, X, delta)
 end
 
 
-function colgen_dantzig(y, X, delta;
-                        constraint_generation = true,
-                        column_generation = true)
+function dantzig_lp(y, X, delta;
+                    constraint_generation = true,
+                    column_generation = true)
     # Initialize model
     # --------------------------------------------------------------------------
     n, p = size(X)
