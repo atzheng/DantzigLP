@@ -1,6 +1,14 @@
 module DantzigLP
 using JuMP, Gurobi, MathProgBase, Lasso
 
+"""Struct to hold diagnostic info from the Dantzig solver."""
+struct dantzig_diagnostics
+    lasso_time
+    columns_generated
+    constraints_generated
+    lasso_accuracy
+    gurobi_time
+end
 
 """
 Baseline solution. Mainly for testing.
@@ -31,7 +39,8 @@ end
 
 function dantzig_lp(y, X, delta;
                     constraint_generation = true,
-                    column_generation = true)
+                    column_generation = true,
+                    return_diagnostics = false)
     # Initialize model
     # --------------------------------------------------------------------------
     n, p = size(X)
@@ -187,6 +196,8 @@ function generate_constraints(model, delta, X, residuals, max_constraints = 50)
     end
     return new_constrs
 end
+
+
 
 # Module end
 end
