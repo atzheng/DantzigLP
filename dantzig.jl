@@ -39,7 +39,6 @@ end
 function colgen_dantzig(y, X, delta;
                         constraint_generation = true,
                         column_generation = true)
-    # TODO difference between custom and standard lasso solns?
     # Initialize model
     # --------------------------------------------------------------------------
     n, p = size(X)
@@ -60,7 +59,6 @@ function colgen_dantzig(y, X, delta;
     info("Fitting Lasso solution...")
     lasso_soln = vec(fit(LassoPath, X, y, λ = [delta / n],
                          maxncoef = p, standardize = false).coefs)
-    # lasso_soln = sparse(vec(Lasso_soln_delta(y, X, delta)))
 
     # --- Initialize constraints ---
     if constraint_generation == false
@@ -195,31 +193,6 @@ function generate_constraints(model, delta, X, residuals, max_constraints = 50)
         end
     end
     return new_constrs
-end
-
-
-function Lasso_soln_delta(Y, X, delta, TOL=0.0001, maxiter=10000)
-    n,p = size(X)
-    aa= svds(X,nsv=1,ritzvec=false)[1]
-    Lip = aa.S[1]
-    Lip = Lip^2
-
-    betak = zeros(p,1)
-    grad = -X'*(Y - X*betak)
-    err=0
-
-    for iter in 1:maxiter
-        betakold = betak
-        betak = betak - grad/Lip
-        betak = sign.(betak) .* max(abs(betak) - delta/Lip, 0)
-        err = norm(betak - betakold,Inf)
-        grad = -X'*(Y - X*betak)
-        if (err < TOL)
-            break
-        end
-    end
-    warn("Lasso solution did not converge within maxiter.")
-    return betak
 end
 
 # Module end
