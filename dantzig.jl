@@ -1,6 +1,7 @@
 module DantzigLP
 using JuMP, Gurobi, MathProgBase, Lasso
 
+
 function dantzig_lp(y, X, delta, method)
     if method == :column_generation
         return colgen_dantzig(y, X, delta)
@@ -44,7 +45,7 @@ function colgen_dantzig(y, X, delta;
     n, p = size(X)
     I_p = speye(p)
 
-    model = Model(solver = GurobiSolver(Method=1))
+    model = Model(solver = GurobiSolver(Method=1))  # Force simplex method
 
     abs_beta_pos = @variable(model, [1:p], lowerbound = 0)
     abs_beta_neg = @variable(model, [1:p], lowerbound = 0)
@@ -57,7 +58,8 @@ function colgen_dantzig(y, X, delta;
     beta_indices = []
 
     info("Fitting Lasso solution...")
-    lasso_soln = vec(fit(LassoPath, X, y, λ = [delta], maxncoef = p).coefs)
+    lasso_soln = vec(fit(LassoPath, X, y, λ = [delta / n],
+                         maxncoef = p, standardize = false).coefs)
     # lasso_soln = sparse(vec(Lasso_soln_delta(y, X, delta)))
 
     # --- Initialize constraints ---
