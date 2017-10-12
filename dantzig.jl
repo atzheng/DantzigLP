@@ -42,14 +42,17 @@ end
 function dantzig_lp(y, X, delta;
                     constraint_generation = true,
                     column_generation = true,
-                    return_diagnostics = false)
+                    return_diagnostics = false,
+                    verbose = false)
     tic()
     # Initialize model
     # --------------------------------------------------------------------------
     n, p = size(X)
     I_p = speye(p)
 
-    model = Model(solver = GurobiSolver(Method=1))  # Force simplex method
+
+    output_flag = if verbose 1 else 0 end
+    model = Model(solver = GurobiSolver(Method = 1, OutputFlag = output_flag))
 
     abs_beta_pos = @variable(model, [1:p], lowerbound = 0)
     abs_beta_neg = @variable(model, [1:p], lowerbound = 0)
@@ -61,7 +64,7 @@ function dantzig_lp(y, X, delta;
     betas = []
     beta_indices = []
 
-    info("Fitting Lasso solution...")
+    if verbose info("Fitting Lasso solution...") end
     lasso_soln, lasso_seconds =
         @timed vec(fit(LassoPath, X, y, λ = [delta / n],
                        maxncoef = p, standardize = false).coefs)
@@ -138,8 +141,10 @@ function dantzig_lp(y, X, delta;
             if new_var_index == nothing
                 status = :Optimal
             else
-                info("Column generation iteration $columns_generated:"
-                     * "adding beta $new_var_index")
+                if verbose
+                    info("Column generation iteration $columns_generated:"
+                         * "adding beta $new_var_index")
+                end
                 new_var = add_beta(new_var_index)
                 gurobi_seconds += @elapsed solve(model)
                 columns_generated += 1
@@ -178,7 +183,6 @@ function generate_column(model, X, beta_indices)
     red_costs[beta_indices] = Inf
 
     min_index = indmin(red_costs)
-    info(red_costs[min_index])
 
     if red_costs[min_index] < -TOL
         return min_index
@@ -196,7 +200,8 @@ function get_reduced_costs(model, X)
 end
 
 
-function generate_constraints(model, delta, X, residuals, max_constraints = 50)
+function generate_constraints(model, delta, X, residuals;
+                              max_constraints = 50, verbose = false)
     Xt = X'
     TOL = 1e-6
     constraint_values = Xt * getvalue(residuals)
@@ -207,12 +212,12 @@ function generate_constraints(model, delta, X, residuals, max_constraints = 50)
     for row in constraint_indices[1:max_constraints]
         val = constraint_values[row]
         if val < -delta - TOL
-            info("Constraint violated! val = $val")
+            # if verbose info("Constraint violated! val = $val") end
             new_constr =
                 @constraint(model, dot(Xt[row, :], residuals) >= -delta)
             push!(new_constrs, new_constr)
         elseif val > delta + TOL
-            info("Constraint violated! val = $val")
+            # if verbose info("Constraint violated! val = $val") end
             new_constr = @constraint(model, dot(Xt[row, :], residuals) <= delta)
             push!(new_constrs, new_constr)
         end
