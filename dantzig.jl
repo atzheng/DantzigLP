@@ -3,11 +3,13 @@ using JuMP, Gurobi, MathProgBase, Lasso
 
 """Struct to hold diagnostic info from the Dantzig solver."""
 struct dantzig_diagnostics
-    lasso_time
+    total_seconds
+    lasso_seconds
+    gurobi_seconds
     columns_generated
     constraints_generated
-    lasso_accuracy
-    gurobi_time
+    correct_lasso_vars
+    total_vars
 end
 
 """
@@ -41,6 +43,7 @@ function dantzig_lp(y, X, delta;
                     constraint_generation = true,
                     column_generation = true,
                     return_diagnostics = false)
+    tic()
     # Initialize model
     # --------------------------------------------------------------------------
     n, p = size(X)
@@ -59,8 +62,9 @@ function dantzig_lp(y, X, delta;
     beta_indices = []
 
     info("Fitting Lasso solution...")
-    lasso_soln = vec(fit(LassoPath, X, y, λ = [delta / n],
-                         maxncoef = p, standardize = false).coefs)
+    lasso_soln, lasso_seconds =
+        @timed vec(fit(LassoPath, X, y, λ = [delta / n],
+                       maxncoef = p, standardize = false).coefs)
 
     # --- Initialize constraints ---
     if constraint_generation == false
@@ -108,18 +112,23 @@ function dantzig_lp(y, X, delta;
 
     # Column / constraint generation
     # --------------------------------------------------------------------------
-    solve(model)
+    columns_generated = 0
+    constraints_generated = 0
+    gurobi_seconds = 0
+
+    gurobi_seconds += @elapsed solve(model)
     status = :InProgress
-    i = 1
     while ((status == :InProgress) &&
            (column_generation || constraint_generation))
 
         # --- Constraint generation ---
         if constraint_generation
             new_constrs = generate_constraints(model, delta, X, residuals)
+            constraints_generated += length(new_constrs)
             while length(new_constrs) > 0
-                solve(model)
+                gurobi_seconds += @elapsed solve(model)
                 new_constrs = generate_constraints(model, delta, X, residuals)
+                constraints_generated += length(new_constrs)
             end
         end
 
@@ -129,11 +138,11 @@ function dantzig_lp(y, X, delta;
             if new_var_index == nothing
                 status = :Optimal
             else
-                info("Column generation iteration $i:"
+                info("Column generation iteration $columns_generated:"
                      * "adding beta $new_var_index")
                 new_var = add_beta(new_var_index)
-                solve(model)
-                i = i + 1
+                gurobi_seconds += @elapsed solve(model)
+                columns_generated += 1
             end
         else
             status = :Optimal
@@ -145,7 +154,21 @@ function dantzig_lp(y, X, delta;
         beta_values[i] = getvalue(var)
     end
 
-    return (model, beta_values, lasso_soln)
+    total_seconds = toc()
+    if return_diagnostics
+        correct_lasso_vars = length(intersect(beta_values.nzind, lasso_soln.nzind))
+        total_vars = length(beta_values.nzind)
+        diagnostics = dantzig_diagnostics(total_seconds,
+                                          lasso_seconds,
+                                          gurobi_seconds,
+                                          columns_generated,
+                                          constraints_generated,
+                                          correct_lasso_vars,
+                                          total_vars)
+        return (model, beta_values, diagnostics)
+    else
+        return (model, beta_values)
+    end
 end
 
 
@@ -177,7 +200,7 @@ function generate_constraints(model, delta, X, residuals, max_constraints = 50)
     Xt = X'
     TOL = 1e-6
     constraint_values = Xt * getvalue(residuals)
-    constraint_indices = sortperm(abs(constraint_values), rev = true)
+    constraint_indices = sortperm(abs.(constraint_values), rev = true)
 
     new_constrs = []
 
@@ -196,8 +219,6 @@ function generate_constraints(model, delta, X, residuals, max_constraints = 50)
     end
     return new_constrs
 end
-
-
 
 # Module end
 end
