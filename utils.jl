@@ -1,3 +1,6 @@
+using DataFrames
+
+
 """
 Generate test regression problems.
 # Arguments
@@ -43,4 +46,13 @@ end
 "Normalize columns of a matrix by their L2 norm."
 function normalize_columns(X)
     return mapslices(x -> x / norm(x, 2), X, [1])
+end
+
+
+"Convert a list of structs to a dataframe."
+function struct2df(xs)
+    fields = fieldnames(xs[1])
+    return DataFrame(
+        [[getfield(x, field) for x in xs] for field in fields],
+        fields)
 end
