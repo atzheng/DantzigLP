@@ -54,15 +54,13 @@ function dantzig_lp(y, X, delta;
     output_flag = if verbose 1 else 0 end
     model = Model(solver = GurobiSolver(Method = 1, OutputFlag = output_flag))
 
-    abs_beta_pos = @variable(model, [1:p], lowerbound = 0)
-    abs_beta_neg = @variable(model, [1:p], lowerbound = 0)
     residuals = @variable(model, [1:n])
-
-    abs_beta_constrs = @constraint(model, abs_beta_pos - abs_beta_neg .== 0)
     residual_constrs = @constraint(model, y - residuals .== 0)
 
-    betas = []
-    beta_indices = []
+    pos_betas = []
+    neg_betas = []
+    pos_beta_indices = []
+    neg_beta_indices = []
 
     if verbose info("Fitting Lasso solution...") end
     lasso_soln, lasso_seconds =
@@ -82,7 +80,7 @@ function dantzig_lp(y, X, delta;
     linf_pos_constrs =
         @constraint(model, X'[init_constrs, :] * residuals .>= -delta)
 
-    obj = @objective(model, Min, sum(abs_beta_pos + abs_beta_neg))
+    obj = @objective(model, Min, 0)
 
     # Generate BFS from lasso solution
     # --------------------------------------------------------------------------
@@ -90,15 +88,24 @@ function dantzig_lp(y, X, delta;
     Closure to add new beta variables to the model.
     WARNING: mutates betas and beta_indices.
     """
-    function add_beta(idx)
+    function add_beta(idx, sgn)
+        if sgn > 0
+            beta_indices = pos_beta_indices
+            betas = pos_betas
+        else
+            beta_indices = neg_beta_indices
+            betas = neg_betas
+        end
+
         if idx in beta_indices
             return nothing
         else
             new_var = @variable(
                 model,
-                objective = 0,
-                inconstraints = vcat(residual_constrs, [abs_beta_constrs[idx]]),
-                coefficients = full(vcat(-X[:, idx], [-1.0])))
+                objective = 1,
+                inconstraints = residual_constrs,
+                coefficients = -sgn * X[:, idx],
+                lowerbound = 0)
             push!(beta_indices, idx)
             push!(betas, new_var)
             return new_var
@@ -106,9 +113,14 @@ function dantzig_lp(y, X, delta;
     end
 
     for (idx, beta) in enumerate(lasso_soln)
-        if beta != 0 || column_generation == false
-            new_var = add_beta(idx)
-            setvalue(new_var, beta)
+        if column_generation
+            if beta != 0
+                new_var = add_beta(idx, sign(beta))
+                setvalue(new_var, beta)
+            end
+        else
+            add_beta(idx, 1)
+            add_beta(idx, -1)
         end
     end
 
@@ -137,7 +149,8 @@ function dantzig_lp(y, X, delta;
 
         # --- Column generation ---
         if column_generation
-            new_var_index = generate_column(model, X, beta_indices)
+            new_var_index, new_var_sign =
+                generate_column(model, X, pos_beta_indices, neg_beta_indices)
             if new_var_index == nothing
                 status = :Optimal
             else
@@ -145,7 +158,7 @@ function dantzig_lp(y, X, delta;
                     info("Column generation iteration $columns_generated:"
                          * "adding beta $new_var_index")
                 end
-                new_var = add_beta(new_var_index)
+                new_var = add_beta(new_var_index, new_var_sign)
                 gurobi_seconds += @elapsed solve(model)
                 columns_generated += 1
             end
@@ -155,13 +168,18 @@ function dantzig_lp(y, X, delta;
     end
 
     beta_values = spzeros(p)
-    for (var, i) in zip(betas, beta_indices)
+    for (var, i) in zip(pos_betas, pos_beta_indices)
         beta_values[i] = getvalue(var)
+    end
+
+    for (var, i) in zip(neg_betas, neg_beta_indices)
+        beta_values[i] -= getvalue(var)
     end
 
     total_seconds = toc()
     if return_diagnostics
-        correct_lasso_vars = length(intersect(beta_values.nzind, lasso_soln.nzind))
+        correct_lasso_vars =
+            length(intersect(beta_values.nzind, lasso_soln.nzind))
         total_vars = length(beta_values.nzind)
         diagnostics = dantzig_diagnostics(total_seconds,
                                           lasso_seconds,
@@ -177,17 +195,26 @@ function dantzig_lp(y, X, delta;
 end
 
 
-function generate_column(model, X, beta_indices)
+function generate_column(model, X, pos_beta_indices, neg_beta_indices)
     TOL = 1e-12
-    red_costs = get_reduced_costs(model, X)
-    red_costs[beta_indices] = Inf
+    pos_costs, neg_costs = get_reduced_costs(model, X)
+    pos_costs[pos_beta_indices] = Inf
+    neg_costs[neg_beta_indices] = Inf
 
-    min_index = indmin(red_costs)
+    pos_min_index = indmin(pos_costs)
+    neg_min_index = indmin(neg_costs)
+    pos_min_cost = pos_costs[pos_min_index]
+    neg_min_cost = neg_costs[neg_min_index]
 
-    if red_costs[min_index] < -TOL
-        return min_index
+    min_cost = min(pos_min_cost, neg_min_cost)
+    min_sign = ifelse(pos_min_cost < neg_min_cost, 1, -1)
+    min_index = ifelse(pos_min_cost < neg_min_cost,
+                       pos_min_index, neg_min_index)
+
+    if min_cost < -TOL
+        return (min_index, min_sign)
     else
-        return nothing
+        return (nothing, nothing)
     end
 end
 
@@ -195,8 +222,12 @@ end
 function get_reduced_costs(model, X)
     n, p = size(X)
     I_p = speye(p)
-    - transpose(model.linconstrDuals[1:p + n]) * vcat(-I_p, -X)
-    return - transpose(model.linconstrDuals[1:p + n]) * vcat(-I_p, -X)
+
+    # Compute reduced costs separately for the positive and negative
+    # components of Beta
+    pos_reduced_costs = 1 - transpose(model.linconstrDuals[1:n]) * -X
+    neg_reduced_costs = 1 - transpose(model.linconstrDuals[1:n]) * X
+    return (pos_reduced_costs, neg_reduced_costs)
 end
 
 
