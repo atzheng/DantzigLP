@@ -5,12 +5,11 @@ using Lasso, GLMNet
 include("regression.jl")
 
 
-delta = 500
+delta = 100
 m = 1000
 n = 100
 X, y, actual = generate_regression_example(n, m, 0.2)
 Y=y
-
 X
 y
 actual
@@ -22,15 +21,16 @@ path = glmnet(X, y)
 # real_lasso_soln = fit(LassoPath, X, y, λ = [delta], maxncoef = m).coefs
 real_lasso_soln = fit(LassoPath, X, y, maxncoef = m)
 rm_lasso_soln = sparse(vec(DantzigLP.Lasso_soln_delta(y, X, delta)))
-bd_model, bd_fit = DantzigLP.dantzig_lp(y, X, delta, :simple)
+bd_model, bd_fit = DantzigLP.baseline_dantzig(y, X, delta)
 
 
 bl_model, bl_fit = baseline_regression(y, X)
 
-delta = 1000
-cg_model, cg_fit, lasso_fit = DantzigLP.colgen_dantzig(
-    y, X, delta, column_generation = true, constraint_generation = false)
-
+delta = 20
+cg_model, cg_fit, diagnostics = DantzigLP.dantzig_lp(
+    y, X, delta, column_generation = true, constraint_generation = true,
+    return_diagnostics = true,
+    verbose = true)
 bd_fit
 cg_fit
 
@@ -63,5 +63,8 @@ obj = @objective(model, Min, dot(c, x))
 solve(model)
 getvalue(x)
 
-
-
+struct tst
+    a
+    b
+    c
+end
