@@ -22,20 +22,19 @@ function baseline_dantzig(y, X, delta)
 
     model = Model(solver = GurobiSolver())
 
-    Beta = @variable(model, [1:p])
     residuals = @variable(model, [1:n])
     abs_beta_pos = @variable(model, [1:p], lowerbound = 0)
     abs_beta_neg = @variable(model, [1:p], lowerbound = 0)
 
-    abs_beta_constrs = @constraint(model, abs_beta_pos - abs_beta_neg .== Beta)
-    residual_constrs = @constraint(model, y - X * Beta .== residuals)
+    residual_constrs =
+        @constraint(model, y - X * (abs_beta_pos - abs_beta_neg) .== residuals)
     linf_pos_constrs = @constraint(model, X' * residuals .<= delta)
     linf_neg_constrs = @constraint(model, X' * residuals .>= -delta)
 
     obj = @objective(model, Min, sum(abs_beta_pos + abs_beta_neg))
 
     solve(model)
-    return model, sparse(getvalue(Beta))
+    return model, sparse(getvalue(abs_beta_pos) - getvalue(abs_beta_neg))
 end
 
 
