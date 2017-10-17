@@ -25,7 +25,8 @@ function run_instance(X, y, pct, rho, colgen, congen)
     _, _, diagnostics = DantzigLP.dantzig_lp(y, X, max_delta * pct,
                                              column_generation = colgen,
                                              constraint_generation = congen,
-                                             return_diagnostics = true)
+                                             return_diagnostics = true,
+                                             verbose = true)
     params_df = DataFrame(n = n, p = p, delta_pct = pct, rho = rho,
                           colgen = colgen, congen = congen)
     results_df = struct2df([diagnostics])
@@ -42,12 +43,25 @@ results_df = vcat(results...)
 writetable("results.csv", results_df)
 
 
-n = 5000
-p = 50000
-X, y, _ = generate_regression_example(n, p, 0.2)
-results = run_instance(X, y, 0.8, 0.0, true, true)
+ns = 2000:2000:10000
+ps = 10000:10000:50000
+delta_pct = 0.5
+params = [(n, p) for n in ns for p in ps]
+results = []
+@showprogress for param in params
+    n, p = param
+    X, y, _ = generate_regression_example(n, p, 0.2)
+    push!(results, run_instance(X, y, delta_pct, 0.0, true, true))
+end
+writetable("algo_results.csv", z)
 
 
+results2 = vcat(results...)
+results_df = vcat(results...)
 
+z = vcat(results2, results_df)
+
+X, y, _ = generate_regression_example(10000, 40000, 0.2)
+results = run_instance(X, y, 0.5, 0.0, true, true)
 
 
