@@ -17,10 +17,10 @@ Baseline solution. Mainly for testing.
 Under normal conditions, should be identical to dantzig_lp with
 column / constraint generation disabled.
 """
-function baseline_dantzig(y, X, delta)
+function baseline_dantzig(y, X, delta, verbose = false)
     n, p = size(X)
 
-    model = Model(solver = GurobiSolver())
+    model = Model(solver = GurobiSolver(OutputFlag = ifelse(verbose, 1, 0)))
 
     residuals = @variable(model, [1:n])
     abs_beta_pos = @variable(model, [1:p], lowerbound = 0)
@@ -33,6 +33,7 @@ function baseline_dantzig(y, X, delta)
 
     obj = @objective(model, Min, sum(abs_beta_pos + abs_beta_neg))
 
+    if verbose info("Solving model...") end
     solve(model)
     return model, sparse(getvalue(abs_beta_pos) - getvalue(abs_beta_neg))
 end
