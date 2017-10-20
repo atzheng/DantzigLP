@@ -10,6 +10,7 @@ struct dantzig_diagnostics
     constraints_generated
     correct_lasso_vars
     total_vars
+    status
 end
 
 """
@@ -43,8 +44,9 @@ function dantzig_lp(y, X, delta;
                     constraint_generation = true,
                     column_generation = true,
                     return_diagnostics = false,
-                    verbose = false)
-    tic()
+                    verbose = false,
+                    timeout = Inf)
+    start_time = time_ns()
     # Initialize model
     # --------------------------------------------------------------------------
     n, p = size(X)
@@ -104,7 +106,7 @@ function dantzig_lp(y, X, delta;
                 model,
                 objective = 1,
                 inconstraints = residual_constrs,
-                coefficients = -sgn * X[:, idx],
+                coefficients = -sgn * full(X[:, idx]),
                 lowerbound = 0)
             push!(beta_indices, idx)
             push!(betas, new_var)
@@ -131,17 +133,25 @@ function dantzig_lp(y, X, delta;
     constraints_generated = 0
     gurobi_seconds = 0
 
-    gurobi_seconds += @elapsed solve(model)
+    solve_status, solve_time = @timed solve(model)
+    gurobi_seconds += solve_time
     status = :InProgress
     while ((status == :InProgress) &&
            (column_generation || constraint_generation))
+
+        if (time_ns() - start_time) / 1.0e9 > timeout
+            status = :Timeout
+            break
+        end
 
         # --- Constraint generation ---
         if constraint_generation
             new_constrs = generate_constraints(model, delta, X, residuals)
             constraints_generated += length(new_constrs)
             while length(new_constrs) > 0
-                gurobi_seconds += @elapsed solve(model)
+                solve_status, solve_time = @timed solve(model)
+                gurobi_seconds += solve_time
+
                 new_constrs = generate_constraints(model, delta, X, residuals)
                 constraints_generated += length(new_constrs)
             end
@@ -159,7 +169,8 @@ function dantzig_lp(y, X, delta;
                          * "adding beta $new_var_index")
                 end
                 new_var = add_beta(new_var_index, new_var_sign)
-                gurobi_seconds += @elapsed solve(model)
+                solve_status, solve_time = @timed solve(model)
+                gurobi_seconds += solve_time
                 columns_generated += 1
             end
         else
@@ -176,7 +187,8 @@ function dantzig_lp(y, X, delta;
         beta_values[i] -= getvalue(var)
     end
 
-    total_seconds = toc()
+    end_time = time_ns()
+    total_seconds = (end_time - start_time) / 1.0e9
     if return_diagnostics
         correct_lasso_vars =
             length(intersect(beta_values.nzind, lasso_soln.nzind))
@@ -187,7 +199,8 @@ function dantzig_lp(y, X, delta;
                                           columns_generated,
                                           constraints_generated,
                                           correct_lasso_vars,
-                                          total_vars)
+                                          total_vars,
+                                          string(status))
         return (model, beta_values, diagnostics)
     else
         return (model, beta_values)
