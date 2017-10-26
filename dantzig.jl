@@ -1,6 +1,7 @@
 module DantzigLP
 using JuMP, Gurobi, MathProgBase, Lasso
 
+
 """Struct to hold diagnostic info from the Dantzig solver."""
 struct dantzig_diagnostics
     total_seconds
@@ -12,6 +13,23 @@ struct dantzig_diagnostics
     total_vars
     status
 end
+
+
+"""
+Struct to hold constraint refs and mutable variables for column
+and constraint generation.
+"""
+type dantzig_model
+    gurobi_model      # Gurobi model object (mutable)
+    pos_betas         # Postive Beta variables already in the model (mutable)
+    pos_beta_indices  # Indices corresponding to entries of pos_betas (mutable)
+    neg_betas         # Negative Beta variables already in the model (mutable)
+    neg_beta_indices  # Indices corresponding to entries of neg_betas (mutable)
+    residuals         # Residual variables
+    residual_constrs  # Constraints r = y - X * Beta
+    X                 # Data matrix X
+end
+
 
 """
 Baseline solution. Mainly for testing.
@@ -40,30 +58,30 @@ function baseline_dantzig(y, X, delta, verbose = false)
 end
 
 
-function dantzig_lp(y, X, delta;
-                    constraint_generation = true,
-                    column_generation = true,
-                    return_diagnostics = false,
-                    verbose = false,
-                    timeout = Inf)
-    start_time = time_ns()
-    # Initialize model
-    # --------------------------------------------------------------------------
+function initialize_model(X, y, delta,
+                          constraint_generation, column_generation, verbose)
+    # --- Construct model ---
     n, p = size(X)
     I_p = speye(p)
 
-
     output_flag = if verbose 1 else 0 end
-    model = Model(solver = GurobiSolver(Method = 1, OutputFlag = output_flag))
+    solver = GurobiSolver(Method = 1, OutputFlag = output_flag)
+    gurobi_model = Model(solver = solver)
 
-    residuals = @variable(model, [1:n])
-    residual_constrs = @constraint(model, y - residuals .== 0)
+    residuals = @variable(gurobi_model, [1:n])
+    residual_constrs = @constraint(gurobi_model, y - residuals .== 0)
+    obj = @objective(gurobi_model, Min, 0)
 
     pos_betas = []
     neg_betas = []
     pos_beta_indices = []
     neg_beta_indices = []
 
+    model = dantzig_model(gurobi_model, pos_betas, pos_beta_indices,
+                          neg_betas, neg_beta_indices,
+                          residuals, residual_constrs, X)
+
+    # --- Generate Lasso Solution ---
     if verbose info("Fitting Lasso solution...") end
     lasso_soln, lasso_seconds =
         @timed vec(fit(LassoPath, X, y, λ = [delta / n],
@@ -78,62 +96,78 @@ function dantzig_lp(y, X, delta;
     end
 
     linf_pos_constrs =
-        @constraint(model, X'[init_constrs, :] * residuals .<= delta)
+        @constraint(gurobi_model, X'[init_constrs, :] * residuals .<= delta)
     linf_pos_constrs =
-        @constraint(model, X'[init_constrs, :] * residuals .>= -delta)
+        @constraint(gurobi_model, X'[init_constrs, :] * residuals .>= -delta)
 
-    obj = @objective(model, Min, 0)
-
-    # Generate BFS from lasso solution
-    # --------------------------------------------------------------------------
-    """
-    Closure to add new beta variables to the model.
-    WARNING: mutates betas and beta_indices.
-    """
-    function add_beta(idx, sgn)
-        if sgn > 0
-            beta_indices = pos_beta_indices
-            betas = pos_betas
-        else
-            beta_indices = neg_beta_indices
-            betas = neg_betas
-        end
-
-        if idx in beta_indices
-            return nothing
-        else
-            new_var = @variable(
-                model,
-                objective = 1,
-                inconstraints = residual_constrs,
-                coefficients = -sgn * full(X[:, idx]),
-                lowerbound = 0)
-            push!(beta_indices, idx)
-            push!(betas, new_var)
-            return new_var
-        end
-    end
-
-    for (idx, beta) in enumerate(lasso_soln)
+    # --- Initialize variables
+    for (idx, coef) in enumerate(lasso_soln)
         if column_generation
-            if beta != 0
-                new_var = add_beta(idx, sign(beta))
-                setvalue(new_var, beta)
+            if coef != 0
+                new_var = add_beta!(model, idx, sign(coef))
+                setvalue(new_var, coef)
             end
         else
-            add_beta(idx, 1)
-            add_beta(idx, -1)
+            add_beta!(model, idx, 1)
+            add_beta!(model, idx, -1)
         end
     end
+    return model
+end
 
 
-    # Column / constraint generation
-    # --------------------------------------------------------------------------
+"""
+Closure to add new beta variables to the model.
+WARNING: mutates betas and beta_indices.
+"""
+function add_beta!(model, idx, sgn)
+    if sgn > 0
+        beta_indices = model.pos_beta_indices
+        betas = model.pos_betas
+    else
+        beta_indices = model.neg_beta_indices
+        betas = model.neg_betas
+    end
+    if idx in beta_indices
+        return nothing
+    else
+        new_var = @variable(
+            model.gurobi_model,
+            objective = 1,
+            inconstraints = model.residual_constrs,
+            coefficients = -sgn * full(model.X[:, idx]),
+            lowerbound = 0)
+        push!(beta_indices, idx)
+        push!(betas, new_var)
+        return new_var
+    end
+end
+
+
+function dantzig_lp(y, X, delta;
+                    constraint_generation = true,
+                    column_generation = true,
+                    return_diagnostics = false,
+                    verbose = false,
+                    timeout = Inf)
+    model = initialize_model(
+        X, y, minimum(delta), constraint_generation, column_generation, verbose)
+    solution = solve_model(model, delta,
+                           constraint_generation, column_generation,
+                           verbose, timeout)
+    return solution
+end
+
+
+function solve_model(model, delta,
+                     constraint_generation, column_generation, verbose, timeout)
+    # Logging vars
+    start_time = time_ns()
     columns_generated = 0
     constraints_generated = 0
     gurobi_seconds = 0
 
-    solve_status, solve_time = @timed solve(model)
+    solve_status, solve_time = @timed solve(model.gurobi_model)
     gurobi_seconds += solve_time
     status = :InProgress
     while ((status == :InProgress) &&
@@ -146,21 +180,19 @@ function dantzig_lp(y, X, delta;
 
         # --- Constraint generation ---
         if constraint_generation
-            new_constrs = generate_constraints(model, delta, X, residuals)
+            new_constrs = generate_constraints(model, delta)
             constraints_generated += length(new_constrs)
             while length(new_constrs) > 0
-                solve_status, solve_time = @timed solve(model)
+                solve_status, solve_time = @timed solve(model.gurobi_model)
                 gurobi_seconds += solve_time
-
-                new_constrs = generate_constraints(model, delta, X, residuals)
+                new_constrs = generate_constraints(model, delta)
                 constraints_generated += length(new_constrs)
             end
         end
 
         # --- Column generation ---
         if column_generation
-            new_var_index, new_var_sign =
-                generate_column(model, X, pos_beta_indices, neg_beta_indices)
+            new_var_index, new_var_sign = generate_column(model)
             if new_var_index == nothing
                 status = :Optimal
             else
@@ -168,8 +200,8 @@ function dantzig_lp(y, X, delta;
                     info("Column generation iteration $columns_generated:"
                          * "adding beta $new_var_index")
                 end
-                new_var = add_beta(new_var_index, new_var_sign)
-                solve_status, solve_time = @timed solve(model)
+                new_var = add_beta!(model, new_var_index, new_var_sign)
+                solve_status, solve_time = @timed solve(model.gurobi_model)
                 gurobi_seconds += solve_time
                 columns_generated += 1
             end
@@ -178,41 +210,38 @@ function dantzig_lp(y, X, delta;
         end
     end
 
-    beta_values = spzeros(p)
-    for (var, i) in zip(pos_betas, pos_beta_indices)
+    beta_values = spzeros(size(model.X)[2])
+    for (var, i) in zip(model.pos_betas, model.pos_beta_indices)
         beta_values[i] = getvalue(var)
     end
 
-    for (var, i) in zip(neg_betas, neg_beta_indices)
+    for (var, i) in zip(model.neg_betas, model.neg_beta_indices)
         beta_values[i] -= getvalue(var)
     end
 
     end_time = time_ns()
-    total_seconds = (end_time - start_time) / 1.0e9
-    if return_diagnostics
-        correct_lasso_vars =
-            length(intersect(beta_values.nzind, lasso_soln.nzind))
-        total_vars = length(beta_values.nzind)
-        diagnostics = dantzig_diagnostics(total_seconds,
-                                          lasso_seconds,
-                                          gurobi_seconds,
-                                          columns_generated,
-                                          constraints_generated,
-                                          correct_lasso_vars,
-                                          total_vars,
-                                          string(status))
-        return (model, beta_values, diagnostics)
-    else
-        return (model, beta_values)
-    end
+    # total_seconds = (end_time - start_time) / 1.0e9
+    # correct_lasso_vars =
+    #     length(intersect(beta_values.nzind, lasso_soln.nzind))
+    # total_vars = length(beta_values.nzind)
+    # diagnostics = dantzig_diagnostics(total_seconds,
+    #                                   lasso_seconds,
+    #                                   gurobi_seconds,
+    #                                   columns_generated,
+    #                                   constraints_generated,
+    #                                   correct_lasso_vars,
+    #                                   total_vars,
+    #                                   string(status))
+    diagnostics = nothing  # TODO Fix the diagnostics
+    return (model, beta_values, diagnostics)
 end
 
 
-function generate_column(model, X, pos_beta_indices, neg_beta_indices)
+function generate_column(model)
     TOL = 1e-12
-    pos_costs, neg_costs = get_reduced_costs(model, X)
-    pos_costs[pos_beta_indices] = Inf
-    neg_costs[neg_beta_indices] = Inf
+    pos_costs, neg_costs = get_reduced_costs(model)
+    pos_costs[model.pos_beta_indices] = Inf
+    neg_costs[model.neg_beta_indices] = Inf
 
     pos_min_index = indmin(pos_costs)
     neg_min_index = indmin(neg_costs)
@@ -232,37 +261,39 @@ function generate_column(model, X, pos_beta_indices, neg_beta_indices)
 end
 
 
-function get_reduced_costs(model, X)
-    n, p = size(X)
+function get_reduced_costs(model)
+    n, p = size(model.X)
     I_p = speye(p)
 
     # Compute reduced costs separately for the positive and negative
     # components of Beta
-    pos_reduced_costs = 1 - transpose(model.linconstrDuals[1:n]) * -X
-    neg_reduced_costs = 1 - transpose(model.linconstrDuals[1:n]) * X
+    pos_reduced_costs =
+        1 - transpose(model.gurobi_model.linconstrDuals[1:n]) * -model.X
+    neg_reduced_costs =
+        1 - transpose(model.gurobi_model.linconstrDuals[1:n]) * model.X
     return (pos_reduced_costs, neg_reduced_costs)
 end
 
 
-function generate_constraints(model, delta, X, residuals;
+function generate_constraints(model, delta;
                               max_constraints = 50, verbose = false)
-    Xt = X'
+    Xt = model.X'
     TOL = 1e-6
-    constraint_values = Xt * getvalue(residuals)
+    constraint_values = Xt * getvalue(model.residuals)
     constraint_indices = sortperm(abs.(constraint_values), rev = true)
 
     new_constrs = []
-
     for row in constraint_indices[1:max_constraints]
         val = constraint_values[row]
         if val < -delta - TOL
             # if verbose info("Constraint violated! val = $val") end
-            new_constr =
-                @constraint(model, dot(Xt[row, :], residuals) >= -delta)
+            new_constr = @constraint(model.gurobi_model,
+                                     dot(Xt[row, :], model.residuals) >= -delta)
             push!(new_constrs, new_constr)
         elseif val > delta + TOL
             # if verbose info("Constraint violated! val = $val") end
-            new_constr = @constraint(model, dot(Xt[row, :], residuals) <= delta)
+            new_constr = @constraint(model.gurobi_model,
+                                     dot(Xt[row, :], model.residuals) <= delta)
             push!(new_constrs, new_constr)
         end
     end
