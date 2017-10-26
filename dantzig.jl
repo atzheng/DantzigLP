@@ -27,6 +27,8 @@ type dantzig_model
     neg_beta_indices  # Indices corresponding to entries of neg_betas (mutable)
     residuals         # Residual variables
     residual_constrs  # Constraints r = y - X * Beta
+    linf_pos_constrs  # Constraints X'r <= delta
+    linf_neg_constrs  # Constraints X'r >= -delta
     X                 # Data matrix X
 end
 
@@ -72,15 +74,6 @@ function initialize_model(X, y, delta,
     residual_constrs = @constraint(gurobi_model, y - residuals .== 0)
     obj = @objective(gurobi_model, Min, 0)
 
-    pos_betas = []
-    neg_betas = []
-    pos_beta_indices = []
-    neg_beta_indices = []
-
-    model = dantzig_model(gurobi_model, pos_betas, pos_beta_indices,
-                          neg_betas, neg_beta_indices,
-                          residuals, residual_constrs, X)
-
     # --- Generate Lasso Solution ---
     if verbose info("Fitting Lasso solution...") end
     lasso_soln, lasso_seconds =
@@ -97,8 +90,12 @@ function initialize_model(X, y, delta,
 
     linf_pos_constrs =
         @constraint(gurobi_model, X'[init_constrs, :] * residuals .<= delta)
-    linf_pos_constrs =
+    linf_neg_constrs =
         @constraint(gurobi_model, X'[init_constrs, :] * residuals .>= -delta)
+
+    model = dantzig_model(gurobi_model, [], [], [], [],
+                          residuals, residual_constrs,
+                          linf_pos_constrs, linf_neg_constrs, X)
 
     # --- Initialize variables
     for (idx, coef) in enumerate(lasso_soln)
@@ -152,10 +149,27 @@ function dantzig_lp(y, X, delta;
                     timeout = Inf)
     model = initialize_model(
         X, y, minimum(delta), constraint_generation, column_generation, verbose)
-    solution = solve_model(model, delta,
+
+    if isa(delta, Array)
+        solutions = []
+        for d in delta
+            for constr in model.linf_pos_constrs
+                JuMP.setRHS(constr, d)
+            end
+            for constr in model.linf_neg_constrs
+                JuMP.setRHS(constr, -d)
+            end
+            solution = solve_model(model, d,
+                                   constraint_generation, column_generation,
+                                   verbose, timeout)
+            push!(solutions, solution)
+        end
+        return solutions
+    else
+        return solve_model(model, delta,
                            constraint_generation, column_generation,
                            verbose, timeout)
-    return solution
+    end
 end
 
 
@@ -180,12 +194,12 @@ function solve_model(model, delta,
 
         # --- Constraint generation ---
         if constraint_generation
-            new_constrs = generate_constraints(model, delta)
+            new_constrs = generate_constraints!(model, delta)
             constraints_generated += length(new_constrs)
             while length(new_constrs) > 0
                 solve_status, solve_time = @timed solve(model.gurobi_model)
                 gurobi_seconds += solve_time
-                new_constrs = generate_constraints(model, delta)
+                new_constrs = generate_constraints!(model, delta)
                 constraints_generated += length(new_constrs)
             end
         end
@@ -275,8 +289,8 @@ function get_reduced_costs(model)
 end
 
 
-function generate_constraints(model, delta;
-                              max_constraints = 50, verbose = false)
+function generate_constraints!(model, delta;
+                               max_constraints = 50, verbose = false)
     Xt = model.X'
     TOL = 1e-6
     constraint_values = Xt * getvalue(model.residuals)
@@ -289,11 +303,13 @@ function generate_constraints(model, delta;
             # if verbose info("Constraint violated! val = $val") end
             new_constr = @constraint(model.gurobi_model,
                                      dot(Xt[row, :], model.residuals) >= -delta)
+            push!(model.linf_neg_constrs, new_constr)
             push!(new_constrs, new_constr)
         elseif val > delta + TOL
             # if verbose info("Constraint violated! val = $val") end
             new_constr = @constraint(model.gurobi_model,
                                      dot(Xt[row, :], model.residuals) <= delta)
+            push!(model.linf_pos_constrs, new_constr)
             push!(new_constrs, new_constr)
         end
     end
