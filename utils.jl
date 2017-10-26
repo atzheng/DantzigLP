@@ -7,20 +7,24 @@ Generate test regression problems.
 - `n`: Number of observations.
 - `p`: Number of covariates.
 - `density`: Proportion (between [0, 1]) of covariates with nonzero true
-             coefficients.
+             coefficients. (poorly named)
 - `SNR`: Signal to noise ratio. Typically between [10, 20].
 - `binary`: Round X matrix to binary values.
 - `rho`: Correlation coefficient.
+- `sparsity`: Sparsity of the X matrix.
 
 TODO Add D matrix somehow
 """
 function generate_regression_example(n::Integer, p::Integer, density;
-                                     SNR=10, binary=false, rho=0.0)
+                                     SNR=10, binary=false, rho=0.0,
+                                     sparsity=0.0)
     if binary
-        X = round(rand(n, p))
+        X = sparse(round.(rand(n, p) * 0.6)) |> normalize_columns
     else
+        # TODO Tried sprandn, which is an order of magnitude slower
         X = randn(n, p) |>
             A -> correlate(A, rho) |>
+            A -> sparsify(A, sparsity) |>
             normalize_columns
     end
 
@@ -31,7 +35,27 @@ function generate_regression_example(n::Integer, p::Integer, density;
 end
 
 
-"Modify X such that all columns have a pairwise correlation of rho."
+"""
+Set `pct` of X values to be zero.
+TODO This is highly inefficient. Also maybe unnecessary
+"""
+function sparsify(X, pct)
+    if pct == 0
+        return X
+    else
+        n, p = size(X)
+        spX = sparse(X)
+        random_vals = rand(n, p)
+        spX[random_vals .< pct] = 0
+        return spX
+    end
+end
+
+
+"""
+Modify X such that all columns have a pairwise correlation of rho.
+TODO Not sure if this preserves sparsity
+"""
 function correlate(X, rho)
     n = size(X)[1]
 
