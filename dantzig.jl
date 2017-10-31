@@ -281,10 +281,9 @@ function get_reduced_costs(model)
 
     # Compute reduced costs separately for the positive and negative
     # components of Beta
-    pos_reduced_costs =
-        1 - transpose(model.gurobi_model.linconstrDuals[1:n]) * -model.X
-    neg_reduced_costs =
-        1 - transpose(model.gurobi_model.linconstrDuals[1:n]) * model.X
+    duals = model.gurobi_model.linconstrDuals[1:n]
+    pos_reduced_costs = 1 - transpose(duals) * -model.X
+    neg_reduced_costs = 1 - transpose(duals) * model.X
     return (pos_reduced_costs, neg_reduced_costs)
 end
 
