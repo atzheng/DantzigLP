@@ -32,6 +32,8 @@ type dantzig_model
     X                 # Data matrix X
 end
 
+Base.show(io::IO, x::dantzig_model) = show(io, x.gurobi_model)
+
 
 """
 Baseline solution. Mainly for testing.
@@ -60,7 +62,7 @@ function baseline_dantzig(y, X, delta, verbose = false)
 end
 
 
-function initialize_model(X, y, delta,
+function initialize_model(X, y, delta, initializer,
                           constraint_generation, column_generation, verbose)
     # --- Construct model ---
     n, p = size(X)
@@ -76,10 +78,7 @@ function initialize_model(X, y, delta,
 
     # --- Generate Lasso Solution ---
     if verbose info("Fitting Lasso solution...") end
-    lasso_soln, lasso_seconds =
-        @timed vec(fit(LassoPath, X, y, λ = [delta / n],
-                       maxncoef = p, standardize = false).coefs)
-
+    lasso_soln, lasso_seconds = @timed initializer(X, y, delta)
     # --- Initialize constraints ---
     if constraint_generation == false
         init_constrs = 1:p
@@ -113,6 +112,13 @@ function initialize_model(X, y, delta,
 end
 
 
+function lasso_initializer(X, y, delta)
+    n, p = size(X)
+    return vec(fit(LassoPath, X, y, λ = [delta / n],
+                   maxncoef = p, standardize = false).coefs)
+end
+
+
 """
 Closure to add new beta variables to the model.
 WARNING: mutates betas and beta_indices.
@@ -142,13 +148,15 @@ end
 
 
 function dantzig_lp(y, X, delta;
+                    initializer = lasso_initializer,
                     constraint_generation = true,
                     column_generation = true,
                     return_diagnostics = false,
                     verbose = false,
                     timeout = Inf)
     model = initialize_model(
-        X, y, minimum(delta), constraint_generation, column_generation, verbose)
+        X, y, minimum(delta), initializer,
+        constraint_generation, column_generation, verbose)
 
     if isa(delta, Array)
         solutions = []
