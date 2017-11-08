@@ -1,18 +1,7 @@
 module DantzigLP
-using JuMP, Gurobi, MathProgBase, Lasso
+using JuMP, Gurobi, MathProgBase, Lasso, DataFrames
 
-
-"""Struct to hold diagnostic info from the Dantzig solver."""
-struct dantzig_diagnostics
-    total_seconds
-    lasso_seconds
-    gurobi_seconds
-    columns_generated
-    constraints_generated
-    correct_lasso_vars
-    total_vars
-    status
-end
+TOL = 1e-8
 
 
 """
@@ -20,16 +9,19 @@ Struct to hold constraint refs and mutable variables for column
 and constraint generation.
 """
 type dantzig_model
-    gurobi_model      # Gurobi model object (mutable)
-    pos_betas         # Postive Beta variables already in the model (mutable)
-    pos_beta_indices  # Indices corresponding to entries of pos_betas (mutable)
-    neg_betas         # Negative Beta variables already in the model (mutable)
-    neg_beta_indices  # Indices corresponding to entries of neg_betas (mutable)
-    residuals         # Residual variables
-    residual_constrs  # Constraints r = y - X * Beta
-    linf_pos_constrs  # Constraints X'r <= delta
-    linf_neg_constrs  # Constraints X'r >= -delta
-    X                 # Data matrix X
+    gurobi_model     # Gurobi model object (mutable)
+    pos_betas        # Postive Beta variables already in the model (mutable)
+    pos_beta_indices # Indices corresponding to entries of pos_betas (mutable)
+    neg_betas        # Negative Beta variables already in the model (mutable)
+    neg_beta_indices # Indices corresponding to entries of neg_betas (mutable)
+    residuals        # Residual variables
+    residual_constrs # Constraints r = y - X * Beta
+    linf_pos_constrs # Constraints X'r <= delta
+    linf_neg_constrs # Constraints X'r >= -delta
+    X                # Data matrix X
+    # Diagnostics
+    diagnostics      # DataFrame of diagnostics
+    initializer_secs # Initializer runtime
 end
 
 Base.show(io::IO, x::dantzig_model) = show(io, x.gurobi_model)
@@ -78,13 +70,13 @@ function initialize_model(X, y, delta, initializer,
 
     # --- Generate Lasso Solution ---
     if verbose info("Fitting Lasso solution...") end
-    lasso_soln, lasso_seconds = @timed initializer(X, y, delta)
+    initializer_soln, initializer_seconds = @timed initializer(X, y, delta)
     # --- Initialize constraints ---
     if constraint_generation == false
         init_constrs = 1:p
     else
         # initialize with constraints from Lasso support
-        init_constrs = lasso_soln.nzind
+        init_constrs = initializer_soln.nzind
     end
 
     linf_pos_constrs =
@@ -94,10 +86,11 @@ function initialize_model(X, y, delta, initializer,
 
     model = dantzig_model(gurobi_model, [], [], [], [],
                           residuals, residual_constrs,
-                          linf_pos_constrs, linf_neg_constrs, X)
+                          linf_pos_constrs, linf_neg_constrs, X,
+                          nothing, initializer_seconds)
 
     # --- Initialize variables
-    for (idx, coef) in enumerate(lasso_soln)
+    for (idx, coef) in enumerate(initializer_soln)
         if column_generation
             if coef != 0
                 new_var = add_beta!(model, idx, sign(coef))
@@ -151,7 +144,6 @@ function dantzig_lp(y, X, delta;
                     initializer = lasso_initializer,
                     constraint_generation = true,
                     column_generation = true,
-                    return_diagnostics = false,
                     verbose = false,
                     timeout = Inf)
     model = initialize_model(
@@ -172,26 +164,32 @@ function dantzig_lp(y, X, delta;
                                    verbose, timeout)
             push!(solutions, solution)
         end
-        return solutions
+        diagnostics = vcat([soln[2] for soln in solutions]...)
+        coefs = [soln[1] for soln in solutions]
     else
-        return solve_model(model, delta,
-                           constraint_generation, column_generation,
-                           verbose, timeout)
+        coefs, diagnostics =
+            solve_model(model, delta,
+                        constraint_generation, column_generation,
+                        verbose, timeout)
     end
+    model.diagnostics = diagnostics
+    return (model, coefs)
 end
 
 
 function solve_model(model, delta,
                      constraint_generation, column_generation, verbose, timeout)
-    # Logging vars
+    # Intialize tracking for diagnostics
     start_time = time_ns()
     columns_generated = 0
     constraints_generated = 0
     gurobi_seconds = 0
-
+    initial_vars = union(model.pos_beta_indices, model.neg_beta_indices)
     solve_status, solve_time = @timed solve(model.gurobi_model)
     gurobi_seconds += solve_time
     status = :InProgress
+
+    # Start solver
     while ((status == :InProgress) &&
            (column_generation || constraint_generation))
 
@@ -200,7 +198,7 @@ function solve_model(model, delta,
             break
         end
 
-        # --- Constraint generation ---
+        # Constraint generation
         if constraint_generation
             new_constrs = generate_constraints!(model, delta)
             constraints_generated += length(new_constrs)
@@ -212,7 +210,7 @@ function solve_model(model, delta,
             end
         end
 
-        # --- Column generation ---
+        # Column generation
         if column_generation
             new_var_index, new_var_sign = generate_column(model)
             if new_var_index == nothing
@@ -232,6 +230,7 @@ function solve_model(model, delta,
         end
     end
 
+    # Extract solution
     beta_values = spzeros(size(model.X)[2])
     for (var, i) in zip(model.pos_betas, model.pos_beta_indices)
         beta_values[i] = getvalue(var)
@@ -241,21 +240,21 @@ function solve_model(model, delta,
         beta_values[i] -= getvalue(var)
     end
 
+    # Tally up diagnostics
     end_time = time_ns()
-    # total_seconds = (end_time - start_time) / 1.0e9
-    # correct_lasso_vars =
-    #     length(intersect(beta_values.nzind, lasso_soln.nzind))
-    # total_vars = length(beta_values.nzind)
-    # diagnostics = dantzig_diagnostics(total_seconds,
-    #                                   lasso_seconds,
-    #                                   gurobi_seconds,
-    #                                   columns_generated,
-    #                                   constraints_generated,
-    #                                   correct_lasso_vars,
-    #                                   total_vars,
-    #                                   string(status))
-    diagnostics = nothing  # TODO Fix the diagnostics
-    return (model, beta_values, diagnostics)
+    total_seconds = (end_time - start_time) / 1.0e9
+    correct_initial_vars = length(intersect(beta_values.nzind, initial_vars))
+    total_vars = length(beta_values.nzind)
+    diagnostics = DataFrame(delta = delta,
+                            total_seconds = total_seconds,
+                            gurobi_seconds = gurobi_seconds,
+                            columns_generated = columns_generated,
+                            constraints_generated = constraints_generated,
+                            initial_vars = length(initial_vars),
+                            correct_initial_vars = correct_initial_vars,
+                            total_vars = total_vars,
+                            status = string(status))
+    return beta_values, diagnostics
 end
 
 
@@ -325,7 +324,6 @@ end
 
 # Module end
 end
-
 
 
 
