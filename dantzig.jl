@@ -54,11 +54,10 @@ function baseline_dantzig(y, X, delta, verbose = false)
 end
 
 
-function initialize_model(X, y, delta, initializer,
+function initialize_model(X, y, delta, initializer_fn,
                           constraint_generation, column_generation, verbose)
     # --- Construct model ---
     n, p = size(X)
-    I_p = speye(p)
 
     output_flag = if verbose 1 else 0 end
     solver = GurobiSolver(Method = 1, OutputFlag = output_flag)
@@ -69,8 +68,8 @@ function initialize_model(X, y, delta, initializer,
     obj = @objective(gurobi_model, Min, 0)
 
     # --- Generate Lasso Solution ---
-    if verbose info("Fitting Lasso solution...") end
-    initializer_soln, initializer_seconds = @timed initializer(X, y, delta)
+    if verbose info("Finding initial solution...") end
+    initializer_soln, initializer_seconds = @timed initializer_fn(X, y, delta)
     # --- Initialize constraints ---
     if constraint_generation == false
         init_constrs = 1:p
@@ -141,13 +140,14 @@ end
 
 
 function dantzig_lp(y, X, delta;
-                    initializer = lasso_initializer,
+                    initializer_fn = lasso_initializer,
+                    reduced_cost_fn = get_reduced_costs,
                     constraint_generation = true,
                     column_generation = true,
                     verbose = false,
                     timeout = Inf)
     model = initialize_model(
-        X, y, minimum(delta), initializer,
+        X, y, minimum(delta), initializer_fn,
         constraint_generation, column_generation, verbose)
 
     if isa(delta, Array)
@@ -159,7 +159,7 @@ function dantzig_lp(y, X, delta;
             for constr in model.linf_neg_constrs
                 JuMP.setRHS(constr, -d)
             end
-            solution = solve_model(model, d,
+            solution = solve_model(model, d, reduced_cost_fn,
                                    constraint_generation, column_generation,
                                    verbose, timeout)
             push!(solutions, solution)
@@ -168,7 +168,7 @@ function dantzig_lp(y, X, delta;
         coefs = [soln[1] for soln in solutions]
     else
         coefs, diagnostics =
-            solve_model(model, delta,
+            solve_model(model, delta, reduced_cost_fn,
                         constraint_generation, column_generation,
                         verbose, timeout)
     end
@@ -177,7 +177,7 @@ function dantzig_lp(y, X, delta;
 end
 
 
-function solve_model(model, delta,
+function solve_model(model, delta, reduced_cost_fn,
                      constraint_generation, column_generation, verbose, timeout)
     # Intialize tracking for diagnostics
     start_time = time_ns()
@@ -212,7 +212,8 @@ function solve_model(model, delta,
 
         # Column generation
         if column_generation
-            new_var_index, new_var_sign = generate_column(model)
+            new_var_index, new_var_sign =
+                generate_column(model, reduced_cost_fn)
             if new_var_index == nothing
                 status = :Optimal
             else
@@ -258,9 +259,8 @@ function solve_model(model, delta,
 end
 
 
-function generate_column(model)
-    TOL = 1e-12
-    pos_costs, neg_costs = get_reduced_costs(model)
+function generate_column(model, reduced_cost_fn)
+    pos_costs, neg_costs = reduced_cost_fn(model)
     pos_costs[model.pos_beta_indices] = Inf
     neg_costs[model.neg_beta_indices] = Inf
 
@@ -284,7 +284,6 @@ end
 
 function get_reduced_costs(model)
     n, p = size(model.X)
-    I_p = speye(p)
 
     # Compute reduced costs separately for the positive and negative
     # components of Beta
@@ -297,13 +296,14 @@ end
 
 function generate_constraints!(model, delta;
                                max_constraints = 50, verbose = false)
+    n, p = size(model.X)
     Xt = model.X'
     TOL = 1e-6
     constraint_values = Xt * getvalue(model.residuals)
     constraint_indices = sortperm(abs.(constraint_values), rev = true)
 
     new_constrs = []
-    for row in constraint_indices[1:max_constraints]
+    for row in constraint_indices[1:min(max_constraints, p)]
         val = constraint_values[row]
         if val < -delta - TOL
             # if verbose info("Constraint violated! val = $val") end
