@@ -16,15 +16,20 @@ function getindex(A :: FusedDantzigMatrix, i :: Integer, j :: Integer)
     if i > A.n | j > A.n
         throw(BoundsError())
     elseif i <= j
-        return - (1 - j / A.n)
+       return - (1 - j / A.n)
     else
         return j / A.n
     end
 end
 
 
-function fused_dantzig(y, delta;
-                       initializer_fn = fused_lasso_initializer, args...)
+"""
+Solves the Dantzig version of the 1D fused lasso. This version of the problem
+has nice properties that enable O(n) search for minimum reduced cost and
+analytic expressions for the X matrix.
+"""
+function fused_dantzig_1D(y, delta;
+                          initializer_fn = fused_lasso_initializer, args...)
     n = length(y)
     dantzig_X = FusedDantzigMatrix(n)
     dantzig_y = y .- sum(y .* 1 / n)
@@ -41,50 +46,34 @@ function fused_dantzig(y, delta;
 end
 
 
-function generalized_fused_dantzig(y, delta;
+function generalized_fused_dantzig(y, delta, k;
                                    X = speye(length(y)),
-                                   initializer_fn = nothing,
                                    args...)
-    n = length(y)
-    if initializer_fn == nothing
-        if X == speye(length(y))
-            initializer_fn = fused_lasso_initializer
-        else
-            initializer_fn = lasso_initializer
-        end
-    end
+    n, p = size(X)
+    S = inv_difference_operator(p, k)
 
-    fused_X = X * fusion_operator(n)
-    dantzig_transform =
-        speye(n) - (fused_X[:, 1] * fused_X[:, 1]') / sum(fused_X[:, 1] .^ 2)
+    fused_X = X * S
+    fusion = fusion_operator(fused_X, k)
 
-    dantzig_X = dantzig_transform * fused_X[:, 2:end]
-    dantzig_y = dantzig_transform * y
+    dantzig_X = fusion * fused_X[:, (k + 1):end]
+    dantzig_y = fusion * y
 
-    model, coefs = DantzigLP.dantzig_lp(
-        dantzig_y, dantzig_X, delta;
-        initializer_fn = initializer_fn, args...)
+    model, coefs = DantzigLP.dantzig_lp(dantzig_y, dantzig_X, delta; args...)
     original_coefs = recover_original_coefs(fused_X, y, coefs)
     return model, original_coefs
 end
 
 
-function recover_original_coefs(fused_X, y, coefs)
+"""TODO this is wrong for the general case"""
+function recover_original_coefs(coefs_b, fused_X, y, k)
     n = length(y)
-    residuals = y - fused_X[:, 2:end] * coefs
-    coef_1 = residuals'fused_X[:, 1] / sum(fused_X[:, 1] .^ 2)
-    return fusion_operator(n) * vcat(coef_1, coefs)
-end
+    Xa = fused_X[:, 1:k]
+    Xb = fused_X[:, (k + 1):end]
 
+    residuals = y - Xb * coefs_b
+    coefs_a = inv(full(Xa'Xa)) * Xa'residuals
 
-function fusion_operator(n)
-    return ones(n, n) |> LowerTriangular |> sparse
-end
-
-
-"""TODO: Very inefficient implementation for now."""
-function inv_fusion_operator(n)
-    return fusion_operator(n) |> full |> inv
+    return inv_difference_operator(n, k) * vcat(coef_1, coefs)
 end
 
 
@@ -126,5 +115,49 @@ function get_reduced_costs(model)
 
     return pos_costs, neg_costs
 end
+
+
+"""
+TODO This is an inefficient implementation; there exists an explicit
+form for entries of this matrix
+"""
+function difference_operator(n :: Integer, k :: Integer)
+     if k == 1
+         operator = spzeros(n - 1, n)
+         for i in 1:(n - 1)
+             operator[i, i] = -1
+             operator[i, i + 1] = 1
+         end
+         return operator
+     else
+         return difference_operator(n - k + 1, 1) *
+             difference_operator(n, k - 1)
+     end
+end
+
+
+function inv_difference_operator(n :: Integer, k :: Integer)
+    diff = difference_operator(n, k)
+    inv_diff = speye(n, n)
+
+    for i in 1:k
+        inv_diff[i, i] = 1
+    end
+
+    for i in (k + 1):n
+        new_m = vec(- diff[i - k, 1:(i - 1)]' * inv_diff[1:(i - 1), :])
+        inv_diff[i, :] += new_m
+    end
+
+    return inv_diff
+end
+
+
+function fusion_operator(X :: AbstractMatrix, k :: Integer)
+    n = size(X, 1)
+    Xa = X[:, 1:k]
+    return speye(n, n) - Xa * inv(full(Xa'Xa)) * Xa'
+end
+
 
 end
