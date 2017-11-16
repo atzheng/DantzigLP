@@ -146,11 +146,11 @@ function solve_model(model, delta, reduced_cost_fn,
             if length(new_columns) == 0
                 status = :Optimal
             else
-                if verbose
-                    info("Column generation iteration $columns_generated:"
-                         * "adding beta $new_var_index")
-                end
                 for (idx, sign) in new_columns
+                    if verbose
+                        info("Column generation iteration $columns_generated:"
+                             * "adding beta $idx")
+                    end
                     add_beta!(model, idx, sign)
                 end
                 solve_status, solve_time = @timed solve(model.gurobi_model)
@@ -235,9 +235,6 @@ function generate_columns(model, reduced_cost_fn, max_columns)
     pos_min_indices = sortperm(vec(pos_costs))[1:max_columns]
     neg_min_indices = sortperm(vec(neg_costs))[1:max_columns]
 
-    info("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
-    @show pos_min_indices
-
     # (idx, sgn) tuples for return values
     pos_return_vals = zip_collect(
         pos_min_indices, ones(length(pos_min_indices)))
@@ -246,8 +243,6 @@ function generate_columns(model, reduced_cost_fn, max_columns)
 
     pos_min_costs = zip_collect(pos_costs[pos_min_indices], pos_return_vals)
     neg_min_costs = zip_collect(neg_costs[neg_min_indices], neg_return_vals)
-
-    @show pos_min_costs
 
     all_costs = vcat(pos_min_costs, neg_min_costs)
     return [x[2] for x in all_costs if x[1] < -TOL]
