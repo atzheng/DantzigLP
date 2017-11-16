@@ -54,91 +54,6 @@ function baseline_dantzig(y, X, delta, verbose = false)
 end
 
 
-function initialize_model(X, y, delta, initializer_fn,
-                          constraint_generation, column_generation, verbose)
-    # --- Construct model ---
-    n, p = size(X)
-
-    output_flag = if verbose 1 else 0 end
-    solver = GurobiSolver(Method = -1, OutputFlag = output_flag)
-    gurobi_model = Model(solver = solver)
-
-    residuals = @variable(gurobi_model, [1:n])
-    residual_constrs = @constraint(gurobi_model, y - residuals .== 0)
-    obj = @objective(gurobi_model, Min, 0)
-
-    # --- Generate Lasso Solution ---
-    if verbose info("Finding initial solution...") end
-    initializer_soln, initializer_seconds = @timed initializer_fn(X, y, delta)
-    # --- Initialize constraints ---
-    if constraint_generation == false
-        init_constrs = 1:p
-    else
-        # initialize with constraints from Lasso support
-        init_constrs = initializer_soln.nzind
-    end
-
-    linf_pos_constrs =
-        @constraint(gurobi_model, X'[init_constrs, :] * residuals .<= delta)
-    linf_neg_constrs =
-        @constraint(gurobi_model, X'[init_constrs, :] * residuals .>= -delta)
-
-    model = dantzig_model(gurobi_model, [], [], [], [],
-                          residuals, residual_constrs,
-                          linf_pos_constrs, linf_neg_constrs, X,
-                          nothing, initializer_seconds)
-
-    # --- Initialize variables
-    for (idx, coef) in enumerate(initializer_soln)
-        if column_generation
-            if coef != 0
-                new_var = add_beta!(model, idx, sign(coef))
-                setvalue(new_var, coef)
-            end
-        else
-            add_beta!(model, idx, 1)
-            add_beta!(model, idx, -1)
-        end
-    end
-    return model
-end
-
-
-function lasso_initializer(X, y, delta)
-    n, p = size(X)
-    return vec(fit(LassoPath, X, y, λ = [delta / n],
-                   maxncoef = p, standardize = false).coefs)
-end
-
-
-"""
-Closure to add new beta variables to the model.
-WARNING: mutates betas and beta_indices.
-"""
-function add_beta!(model, idx, sgn)
-    if sgn > 0
-        beta_indices = model.pos_beta_indices
-        betas = model.pos_betas
-    else
-        beta_indices = model.neg_beta_indices
-        betas = model.neg_betas
-    end
-    if idx in beta_indices
-        return nothing
-    else
-        new_var = @variable(
-            model.gurobi_model,
-            objective = 1,
-            inconstraints = model.residual_constrs,
-            coefficients = -sgn * full(model.X[:, idx]),
-            lowerbound = 0)
-        push!(beta_indices, idx)
-        push!(betas, new_var)
-        return new_var
-    end
-end
-
-
 function dantzig_lp(y, X, delta;
                     initializer_fn = lasso_initializer,
                     reduced_cost_fn = get_reduced_costs,
@@ -269,6 +184,38 @@ function solve_model(model, delta, reduced_cost_fn,
 end
 
 
+# Column / Constraint Generation
+# ==============================================================================
+# Column Generation
+# ------------------------------------------------------------------------------
+"""
+Closure to add new beta variables to the model.
+WARNING: mutates betas and beta_indices.
+"""
+function add_beta!(model, idx, sgn)
+    if sgn > 0
+        beta_indices = model.pos_beta_indices
+        betas = model.pos_betas
+    else
+        beta_indices = model.neg_beta_indices
+        betas = model.neg_betas
+    end
+    if idx in beta_indices
+        return nothing
+    else
+        new_var = @variable(
+            model.gurobi_model,
+            objective = 1,
+            inconstraints = model.residual_constrs,
+            coefficients = -sgn * full(model.X[:, idx]),
+            lowerbound = 0)
+        push!(beta_indices, idx)
+        push!(betas, new_var)
+        return new_var
+    end
+end
+
+
 function generate_column(model, reduced_cost_fn)
     pos_costs, neg_costs = reduced_cost_fn(model)
     pos_costs[model.pos_beta_indices] = Inf
@@ -304,6 +251,8 @@ function get_reduced_costs(model)
 end
 
 
+# Constraint Generation
+# ------------------------------------------------------------------------------
 function generate_constraints!(model, delta;
                                max_constraints = 50, verbose = false)
     n, p = size(model.X)
@@ -330,6 +279,103 @@ function generate_constraints!(model, delta;
         end
     end
     return new_constrs
+end
+
+
+# Initialization Functions
+# ==============================================================================
+function initialize_model(X, y, delta, initializer_fn,
+                          constraint_generation, column_generation, verbose)
+    # --- Construct model ---
+    n, p = size(X)
+
+    output_flag = if verbose 1 else 0 end
+    solver = GurobiSolver(Method = -1, OutputFlag = output_flag)
+    gurobi_model = Model(solver = solver)
+
+    residuals = @variable(gurobi_model, [1:n])
+    residual_constrs = @constraint(gurobi_model, y - residuals .== 0)
+    obj = @objective(gurobi_model, Min, 0)
+
+    # --- Generate Lasso Solution ---
+    if verbose info("Finding initial solution...") end
+    initializer_soln, initializer_seconds = @timed initializer_fn(X, y, delta)
+    # --- Initialize constraints ---
+    if constraint_generation == false
+        init_constrs = 1:p
+    else
+        # initialize with constraints from Lasso support
+        init_constrs = initializer_soln.nzind
+    end
+
+    linf_pos_constrs =
+        @constraint(gurobi_model, X'[init_constrs, :] * residuals .<= delta)
+    linf_neg_constrs =
+        @constraint(gurobi_model, X'[init_constrs, :] * residuals .>= -delta)
+
+    model = dantzig_model(gurobi_model, [], [], [], [],
+                          residuals, residual_constrs,
+                          linf_pos_constrs, linf_neg_constrs, X,
+                          nothing, initializer_seconds)
+
+    # --- Initialize variables
+    for (idx, coef) in enumerate(initializer_soln)
+        if column_generation
+            if coef != 0
+                new_var = add_beta!(model, idx, sign(coef))
+                setvalue(new_var, coef)
+            end
+        else
+            add_beta!(model, idx, 1)
+            add_beta!(model, idx, -1)
+        end
+    end
+    return model
+end
+
+
+function lasso_initializer(X, y, delta)
+    n, p = size(X)
+    return vec(fit(LassoPath, X, y, λ = [delta / n],
+                   maxncoef = p, standardize = false).coefs)
+end
+
+
+function max_correlation_initializer(X, y, delta; coefs = 0.2 * length(n))
+    Xty = X'y
+    nzind = sortperm(abs.(Xty), rev = true)[1:coefs]
+    results = spzeros(length(y))
+    results[nzind] = Xty[nzind]
+    return results
+end
+
+
+function composite_initializer(X, y, delta, initializer_fns)
+    initial_indices = [initializer_fn(X, y, delta)
+                       for initializer_fn in initializer_fns]
+    return merge_vectors(initial_indices...)
+end
+
+
+"""
+Merge the nonzero values of all vectors, with smaller indices of xs
+taking precedence.
+"""
+function merge_vectors(xs...)
+    if map(length, xs) |> length |> unique > 1
+        error("All vectors must have equal length.")
+    end
+
+    results = spzeros(length(xs))
+    nzinds = []
+    for x in xs
+        spx = sparse(x)
+        new_nzind = setdiff(spx.nzind, nzinds)
+        results[new_nzind] = spx[new_nzind]
+        push!(nzinds, new_nzind)
+    end
+
+    return results
 end
 
 # Module end
