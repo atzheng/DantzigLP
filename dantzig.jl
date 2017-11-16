@@ -58,7 +58,9 @@ function dantzig_lp(y, X, delta;
                     initializer_fn = lasso_initializer,
                     reduced_cost_fn = get_reduced_costs,
                     constraint_generation = true,
+                    constraints_per_iter = 50,
                     column_generation = true,
+                    columns_per_iter = 5,
                     verbose = false,
                     timeout = Inf)
     model = initialize_model(
@@ -84,7 +86,8 @@ function dantzig_lp(y, X, delta;
     else
         coefs, diagnostics =
             solve_model(model, delta, reduced_cost_fn,
-                        constraint_generation, column_generation,
+                        constraint_generation, constraints_per_iter,
+                        column_generation, columns_per_iter,
                         verbose, timeout)
     end
     model.diagnostics = diagnostics
@@ -93,7 +96,9 @@ end
 
 
 function solve_model(model, delta, reduced_cost_fn,
-                     constraint_generation, column_generation, verbose, timeout)
+                     constraint_generation, constraints_per_iter,
+                     column_generation, columns_per_iter,
+                     verbose, timeout)
     # Intialize tracking for diagnostics
     start_time = time_ns()
     columns_generated = 0
@@ -118,12 +123,14 @@ function solve_model(model, delta, reduced_cost_fn,
         # Constraint generation
         if constraint_generation
             congen_start_ts = time_ns()
-            new_constrs = generate_constraints!(model, delta)
+            new_constrs = generate_constraints!(
+                model, delta, constraints_per_iter)
             constraints_generated += length(new_constrs)
             while length(new_constrs) > 0
                 solve_status, solve_time = @timed solve(model.gurobi_model)
                 gurobi_seconds += solve_time
-                new_constrs = generate_constraints!(model, delta)
+                new_constrs = generate_constraints!(
+                    model, delta, constraints_per_iter)
                 constraints_generated += length(new_constrs)
             end
             constraint_generation_seconds +=
@@ -133,19 +140,22 @@ function solve_model(model, delta, reduced_cost_fn,
         # Column generation
         if column_generation
             colgen_start_ts = time_ns()
-            new_var_index, new_var_sign =
-                generate_column(model, reduced_cost_fn)
-            if new_var_index == nothing
+            new_columns = generate_columns(
+                model, reduced_cost_fn, columns_per_iter)
+
+            if length(new_columns) == 0
                 status = :Optimal
             else
                 if verbose
                     info("Column generation iteration $columns_generated:"
                          * "adding beta $new_var_index")
                 end
-                new_var = add_beta!(model, new_var_index, new_var_sign)
+                for (idx, sign) in new_columns
+                    add_beta!(model, idx, sign)
+                end
                 solve_status, solve_time = @timed solve(model.gurobi_model)
                 gurobi_seconds += solve_time
-                columns_generated += 1
+                columns_generated += length(new_columns)
             end
             column_generation_seconds += (time_ns() - colgen_start_ts) / 1.0e9
         else
@@ -216,28 +226,34 @@ function add_beta!(model, idx, sgn)
 end
 
 
-function generate_column(model, reduced_cost_fn)
+function generate_columns(model, reduced_cost_fn, max_columns)
     pos_costs, neg_costs = reduced_cost_fn(model)
     pos_costs[model.pos_beta_indices] = Inf
     neg_costs[model.neg_beta_indices] = Inf
 
-    pos_min_index = indmin(pos_costs)
-    neg_min_index = indmin(neg_costs)
-    pos_min_cost = pos_costs[pos_min_index]
-    neg_min_cost = neg_costs[neg_min_index]
+    max_columns = min(max_columns, length(pos_costs))
+    pos_min_indices = sortperm(vec(pos_costs))[1:max_columns]
+    neg_min_indices = sortperm(vec(neg_costs))[1:max_columns]
 
-    min_cost = min(pos_min_cost, neg_min_cost)
-    min_sign = ifelse(pos_min_cost < neg_min_cost, 1, -1)
-    min_index = ifelse(pos_min_cost < neg_min_cost,
-                       pos_min_index, neg_min_index)
+    info("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+    @show pos_min_indices
 
-    if min_cost < -TOL
-        return (min_index, min_sign)
-    else
-        return (nothing, nothing)
-    end
+    # (idx, sgn) tuples for return values
+    pos_return_vals = zip_collect(
+        pos_min_indices, ones(length(pos_min_indices)))
+    neg_return_vals = zip_collect(
+        neg_min_indices, -ones(length(neg_min_indices)))
+
+    pos_min_costs = zip_collect(pos_costs[pos_min_indices], pos_return_vals)
+    neg_min_costs = zip_collect(neg_costs[neg_min_indices], neg_return_vals)
+
+    @show pos_min_costs
+
+    all_costs = vcat(pos_min_costs, neg_min_costs)
+    return [x[2] for x in all_costs if x[1] < -TOL]
 end
 
+zip_collect(args...) = collect(zip(map(vec, args)...))
 
 function get_reduced_costs(model)
     n, p = size(model.X)
@@ -253,8 +269,8 @@ end
 
 # Constraint Generation
 # ------------------------------------------------------------------------------
-function generate_constraints!(model, delta;
-                               max_constraints = 50, verbose = false)
+function generate_constraints!(model, delta, max_constraints = 50;
+                               verbose = false)
     n, p = size(model.X)
     Xt = model.X'
     TOL = 1e-6
