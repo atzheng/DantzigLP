@@ -9,11 +9,11 @@ type FusedDantzigMatrix <: AbstractMatrix{Number}
 end
 
 
-size(A :: FusedDantzigMatrix) = (A.n, A.n)
+size(A :: FusedDantzigMatrix) = (A.n, A.n - 1)
 
 
 function getindex(A :: FusedDantzigMatrix, i :: Integer, j :: Integer)
-    if i > A.n | j > A.n
+    if i > A.n | j > (A.n - 1)
         throw(BoundsError())
     elseif i <= j
        return - (1 - j / A.n)
@@ -29,7 +29,7 @@ has nice properties that enable O(n) search for minimum reduced cost and
 analytic expressions for the X matrix.
 """
 function fused_dantzig_1D(y, delta;
-                          initializer_fn = fused_lasso_initializer, args...)
+                          initializer_fn = fused_lasso_1D_initializer, args...)
     n = length(y)
     dantzig_X = FusedDantzigMatrix(n)
     dantzig_y = y .- sum(y .* 1 / n)
@@ -40,15 +40,17 @@ function fused_dantzig_1D(y, delta;
         reduced_cost_fn = get_reduced_costs,
         args...)
 
-    @show(coefs)
-    original_coefs = recover_original_coefs(fusion_operator(n), y, coefs)
+    original_coefs = recover_original_coefs(
+        coefs, inv_difference_operator(n, 1), y, 1)
     return model, original_coefs
 end
 
 
-function generalized_fused_dantzig(y, delta, k;
-                                   X = speye(length(y)),
-                                   args...)
+"""
+TODO Add calls to the "Fast and Flexible ADMM Algorithms for TF" routine
+for initialization.
+"""
+function dantzig_trend_filtering(y, delta, k; X = speye(length(y)), args...)
     n, p = size(X)
     S = inv_difference_operator(p, k)
 
@@ -59,12 +61,11 @@ function generalized_fused_dantzig(y, delta, k;
     dantzig_y = fusion * y
 
     model, coefs = DantzigLP.dantzig_lp(dantzig_y, dantzig_X, delta; args...)
-    original_coefs = recover_original_coefs(fused_X, y, coefs)
+    original_coefs = recover_original_coefs(coefs, fused_X, y, k)
     return model, original_coefs
 end
 
 
-"""TODO this is wrong for the general case"""
 function recover_original_coefs(coefs_b, fused_X, y, k)
     n = length(y)
     Xa = fused_X[:, 1:k]
@@ -73,17 +74,14 @@ function recover_original_coefs(coefs_b, fused_X, y, k)
     residuals = y - Xb * coefs_b
     coefs_a = inv(full(Xa'Xa)) * Xa'residuals
 
-    return inv_difference_operator(n, k) * vcat(coef_1, coefs)
+    return inv_difference_operator(n, k) * vcat(coefs_a, coefs_b)
 end
 
 
-"""
-Uses the Lasso.jl implementation of the 1D fused lasso DP algorithm.
-WARNING: Only valid for X = I.
-"""
-function fused_lasso_initializer(X, y, delta)
-    n, p = size(X)
-    return sparse(inv_fusion_operator(n) * fit(FusedLasso, y, delta).β)[2:end]
+""" Uses the Lasso.jl implementation of the 1D fused lasso DP algorithm."""
+function fused_lasso_1D_initializer(X, y, delta)
+    n = length(y)
+    return sparse(difference_operator(n, 1) * fit(FusedLasso, y, delta).β)
 end
 
 
@@ -136,20 +134,13 @@ function difference_operator(n :: Integer, k :: Integer)
 end
 
 
+"""
+Note: The original trend filtering paper has a different definition for this
+matrix that has an explicit form for all k. However, this isn't useful unless
+the fusion operator also has an explicit form for all k.
+"""
 function inv_difference_operator(n :: Integer, k :: Integer)
-    diff = difference_operator(n, k)
-    inv_diff = speye(n, n)
-
-    for i in 1:k
-        inv_diff[i, i] = 1
-    end
-
-    for i in (k + 1):n
-        new_m = vec(- diff[i - k, 1:(i - 1)]' * inv_diff[1:(i - 1), :])
-        inv_diff[i, :] += new_m
-    end
-
-    return inv_diff
+    vcat(speye(k, n), difference_operator(n, k)) |> full |> inv |> sparse
 end
 
 
