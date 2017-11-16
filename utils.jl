@@ -1,4 +1,4 @@
-using DataFrames
+using DataFrames, StatsBase
 
 
 """
@@ -15,9 +15,9 @@ Generate test regression problems.
 
 TODO Add D matrix somehow
 """
-function generate_regression_example(n::Integer, p::Integer, density;
-                                     SNR=10, binary=false, rho=0.0,
-                                     sparsity=0.0)
+function regression_example(n::Integer, p::Integer, density;
+                            SNR=10, binary=false, rho=0.0,
+                            sparsity=0.0)
     if binary
         X = sparse(round.(rand(n, p) * 0.6)) |> normalize_columns
     else
@@ -32,6 +32,23 @@ function generate_regression_example(n::Integer, p::Integer, density;
     y = X * true_coeffs + randn(n) * var(X * true_coeffs) / SNR
 
     return X, y, true_coeffs
+end
+
+
+function trend_filtering_example(n::Integer, k::Integer, knots::Integer; SNR=10)
+    knot_idx = sample(1:n, knots, replace=false) |> sort
+    signal = zeros(n)
+
+    next_knot = 1
+    kth_derivative = randn()
+    for i in 1:n
+        if next_knot > knots || i == knot_idx[next_knot]
+            kth_derivative = randn()
+            next_knot += knot_idx
+        end
+        signal[i] = signal[i - 1] + kth_derivative
+    end
+    return signal
 end
 
 
