@@ -60,7 +60,7 @@ function initialize_model(X, y, delta, initializer_fn,
     n, p = size(X)
 
     output_flag = if verbose 1 else 0 end
-    solver = GurobiSolver(Method = 1, OutputFlag = output_flag)
+    solver = GurobiSolver(Method = -1, OutputFlag = output_flag)
     gurobi_model = Model(solver = solver)
 
     residuals = @variable(gurobi_model, [1:n])
