@@ -182,6 +182,8 @@ function solve_model(model, delta, reduced_cost_fn,
     # Intialize tracking for diagnostics
     start_time = time_ns()
     columns_generated = 0
+    column_generation_seconds = 0
+    constraint_generation_seconds = 0
     constraints_generated = 0
     gurobi_seconds = 0
     initial_vars = union(model.pos_beta_indices, model.neg_beta_indices)
@@ -200,6 +202,7 @@ function solve_model(model, delta, reduced_cost_fn,
 
         # Constraint generation
         if constraint_generation
+            congen_start_ts = time_ns()
             new_constrs = generate_constraints!(model, delta)
             constraints_generated += length(new_constrs)
             while length(new_constrs) > 0
@@ -208,10 +211,13 @@ function solve_model(model, delta, reduced_cost_fn,
                 new_constrs = generate_constraints!(model, delta)
                 constraints_generated += length(new_constrs)
             end
+            constraint_generation_seconds +=
+                (time_ns() - congen_start_ts) / 1.0e9
         end
 
         # Column generation
         if column_generation
+            colgen_start_ts = time_ns()
             new_var_index, new_var_sign =
                 generate_column(model, reduced_cost_fn)
             if new_var_index == nothing
@@ -226,6 +232,7 @@ function solve_model(model, delta, reduced_cost_fn,
                 gurobi_seconds += solve_time
                 columns_generated += 1
             end
+            column_generation_seconds += (time_ns() - colgen_start_ts) / 1.0e9
         else
             status = :Optimal
         end
@@ -246,15 +253,18 @@ function solve_model(model, delta, reduced_cost_fn,
     total_seconds = (end_time - start_time) / 1.0e9
     correct_initial_vars = length(intersect(beta_values.nzind, initial_vars))
     total_vars = length(beta_values.nzind)
-    diagnostics = DataFrame(delta = delta,
-                            total_seconds = total_seconds,
-                            gurobi_seconds = gurobi_seconds,
-                            columns_generated = columns_generated,
-                            constraints_generated = constraints_generated,
-                            initial_vars = length(initial_vars),
-                            correct_initial_vars = correct_initial_vars,
-                            total_vars = total_vars,
-                            status = string(status))
+    diagnostics = DataFrame(
+        delta = delta,
+        total_seconds = total_seconds,
+        gurobi_seconds = gurobi_seconds,
+        columns_generated = columns_generated,
+        column_generation_seconds = column_generation_seconds,
+        constraints_generated = constraints_generated,
+        constraint_generation_seconds = constraint_generation_seconds,
+        initial_vars = length(initial_vars),
+        correct_initial_vars = correct_initial_vars,
+        total_vars = total_vars,
+        status = string(status))
     return beta_values, diagnostics
 end
 
@@ -324,7 +334,3 @@ end
 
 # Module end
 end
-
-
-
-
