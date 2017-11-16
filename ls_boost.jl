@@ -4,6 +4,7 @@ module LSBoost
 function large_ls_boost(X, y, eps;
                         max_iter = 10000, min_corr = -Inf, verbose = false,
                         init_active_set = size(X)[2],
+                        initial_coefs = nothing,
                         full_update_freq = 1,
                         full_update_min_iters = 1)
     n, p = size(X)
@@ -14,8 +15,14 @@ function large_ls_boost(X, y, eps;
     active_X = nothing
 
     # Get initial active set
-    active_idx = sortperm(abs.(Xtr), rev=true)[1:init_active_set]
-    coefs = spzeros(p)
+    if initial_coefs == nothing
+        active_idx = sortperm(abs.(Xtr), rev=true)[1:init_active_set]
+        coefs = spzeros(p)
+    else
+        active_idx = find(initial_coefs .!= 0)
+        coefs = initial_coefs
+    end
+
     j = 1
     total_full_update_iters = 0
     for i in 0:(max_iter - 1)
@@ -40,7 +47,7 @@ function large_ls_boost(X, y, eps;
                 if index in active_idx && full_update_iters >= full_update_min_iters
                     break
                 elseif !(index in active_idx)
-                    info("Adding index $index")
+                    if verbose info("Adding index $index") end
                     push!(active_idx, index)
                 end
             end
@@ -146,4 +153,3 @@ function univariate_ls_fit(x, y)
 end
 
 end
-
