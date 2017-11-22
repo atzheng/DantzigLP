@@ -322,6 +322,8 @@ function initialize_model(X, y, delta, initializer_fn,
         init_constrs = initializer_soln.nzind
     end
 
+
+    # TODO Only need to add either the positive or negative constraints
     linf_pos_constrs =
         @constraint(gurobi_model, X'[init_constrs, :] * residuals .<= delta)
     linf_neg_constrs =
@@ -355,10 +357,12 @@ function lasso_initializer(X, y, delta)
 end
 
 
-function max_correlation_initializer(X, y, delta; coefs = 0.2 * length(n))
+function max_correlation_initializer(X, y, delta;
+                                     coefs = Int(round(0.2 * length(y))))
+    n, p = size(X)
     Xty = X'y
     nzind = sortperm(abs.(Xty), rev = true)[1:coefs]
-    results = spzeros(length(y))
+    results = spzeros(p)
     results[nzind] = Xty[nzind]
     return results
 end
@@ -371,16 +375,32 @@ function composite_initializer(X, y, delta, initializer_fns)
 end
 
 
+function recursive_initializer(X, y, delta, initializer_fn, max_depth)
+    soln = initializer_fn(X, y, delta)
+    if max_depth == 1
+        return soln
+    else
+        p = size(X, 2)
+        next_indices = sort(setdiff(1:p, soln.nzind))
+        next_vector = spzeros(p)
+        next_results = recursive_initializer(
+            X[:, next_indices], y, delta, initializer_fn, max_depth - 1)
+        next_vector[next_indices] = next_results
+        return merge_vectors(soln, next_vector)
+    end
+end
+
+
 """
 Merge the nonzero values of all vectors, with smaller indices of xs
 taking precedence.
 """
 function merge_vectors(xs...)
-    if map(length, xs) |> length |> unique > 1
+    if length(unique(map(length, xs))) > 1
         error("All vectors must have equal length.")
     end
 
-    results = spzeros(length(xs))
+    results = spzeros(length(xs[1]))
     nzinds = []
     for x in xs
         spx = sparse(x)
