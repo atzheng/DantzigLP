@@ -1,6 +1,9 @@
 module DantzigLP
 using JuMP, Gurobi, MathProgBase, Lasso, DataFrames
 
+export baseline_dantzig, dantzig_lp, lasso_initializer,
+    max_correlation_initializer, composite_initializer, recursive_initializer
+
 TOL = 1e-8
 
 
