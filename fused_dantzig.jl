@@ -5,24 +5,87 @@ import Base.getindex, Base.size
 
 
 type FusedDantzigMatrix <: AbstractMatrix{Number}
-    n :: Int
+    n::Integer
+    k::Integer
+    # Stored values for fast computation
+    cum_sums :: Array{Number, 2}  # Cumulative sums up to order k (n x k Array)
+    U :: Array{Number, 2}  # From SVD of first k columns of H (n x k Array)
+end
+
+size(A :: FusedDantzigMatrix) = (A.n, A.n - A.k)
+
+"""Typical constructor"""
+function FusedDantzigMatrix(n::Int, k::Int)
+    X1 = ones(n)
+    normalizer = factorial(k) / (n ^ k)
+    cum_sums = cumsum_k(X1, k) * normalizer
+    Xa = hcat([shift(cum_sums[:, i], i - 1) for i in 1:k]...)
+    U = svd(Xa)[1]
+    return FusedDantzigMatrix(n, k, cum_sums, U)
 end
 
 
-size(A :: FusedDantzigMatrix) = (A.n, A.n - 1)
-
-
-function getindex(A :: FusedDantzigMatrix, i :: Integer, j :: Integer)
-    if i > A.n | j > (A.n - 1)
-        throw(BoundsError())
-    elseif i <= j
-       return - (1 - j / A.n)
+function getindex(A::FusedDantzigMatrix, i::Colon, j::Integer)
+    if A.k == 1
+        upper = - ones(j) * (1 - j / A.n)
+        lower = ones(n - j) * (j / A.n)
+        return vcat(upper, lower)
     else
-        return j / A.n
+        if j > A.n - A.k
+            throw(BoundsError())
+        else
+            Xj = shift(A.cum_sums[:, A.k + 1], A.k + j - 1)
+            return invdiff_matvecmult(A, Xj)
+        end
     end
 end
 
 
+# TODO Can we do a fast getrow too?
+function shift(x::AbstractVector, k::Integer)
+    y = circshift(x, k)
+    y[1:min(end, k)] = 0
+    return y
+end
+
+
+"""kth order cumulative sum"""
+function cumsum_k(x::AbstractVector, k::Integer)
+    if k == 0
+        return x
+    else
+        prev_cumsums = cumsum_k(x, k - 1)
+        last_cumsum = prev_cumsums[:, end]
+        current_cumsum = cumsum(last_cumsum)
+        return hcat(prev_cumsums, current_cumsum)
+    end
+end
+
+
+function getindex(A :: FusedDantzigMatrix, i :: Integer, j :: Integer)
+    if A.k == 1
+        if i > A.n | j > (A.n - 1)
+            throw(BoundsError())
+        elseif i <= j
+            return - (1 - j / A.n)
+        else
+            return j / A.n
+        end
+    else
+        Xj = shift(A.cum_sums[:, A.k + 1], A.k + j - 1)
+        return (Xj - A.U * (A.U'Xj))[i]
+    end
+end
+
+
+# TODO this is poorly named
+function invdiff_matvecmult(A::FusedDantzigMatrix, x::Array)
+    return x - A.U * (A.U'x)
+end
+
+
+# Dantzig trend filtering
+# ==============================================================================
 """
 Solves the Dantzig version of the 1D fused lasso. This version of the problem
 has nice properties that enable O(n) search for minimum reduced cost and
