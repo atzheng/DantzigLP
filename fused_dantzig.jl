@@ -25,16 +25,20 @@ function FusedDantzigMatrix(n::Int, k::Int)
 end
 
 
-function getindex(A::FusedDantzigMatrix, i::Colon, j::Integer)
+function getindex(A::FusedDantzigMatrix, i::Colon, j::Union{Integer, Vector})
     if A.k == 1
         upper = - ones(j) * (1 - j / A.n)
         lower = ones(n - j) * (j / A.n)
         return vcat(upper, lower)
     else
-        if j > A.n - A.k
+        if maximum(j) > A.n - A.k
             throw(BoundsError())
         else
-            Xj = shift(A.cum_sums[:, A.k + 1], A.k + j - 1)
+            sorted_j = sort(j) .- 1 .+ A.k
+            diffs = sorted_j - shift(sorted_j, 1)
+            Xj = hcat(accumulate((vec, i) -> shift(vec, i),
+                                 A.cum_sums[:, A.k + 1],
+                                 diffs)...)
             return invdiff_matvecmult(A, Xj)
         end
     end
