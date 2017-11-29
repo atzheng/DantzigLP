@@ -36,19 +36,25 @@ end
 
 
 function trend_filtering_example(n::Integer, k::Integer, knots::Integer; SNR=10)
-    knot_idx = sample(1:n, knots, replace=false) |> sort
-    signal = zeros(n)
+    knot_idx = vcat(sort(sample(1:(n - 1), knots, replace=false)), [n])
+    diffs = knot_idx .- shift(knot_idx, 1)
+    piecewise_fns = [random_polynomial(diff, k) for diff in diffs]
+    signal = vcat(piecewise_fns...)
+    var_noise = var(signal) / SNR
+    @show var(signal)
+    noise = randn(n) * sqrt(var_noise)
+    @show var(noise)
+    return (signal + noise), signal
+end
 
-    next_knot = 1
-    kth_derivative = randn()
-    for i in 1:n
-        if next_knot > knots || i == knot_idx[next_knot]
-            kth_derivative = randn()
-            next_knot += knot_idx
-        end
-        signal[i] = signal[i - 1] + kth_derivative
-    end
-    return signal
+
+function random_polynomial(n, k; min_k = 0)
+    x_interval = rand(2) .* [-1, 1]
+    coefs = randn(k - min_k + 1)
+    step_size = (x_interval[2] - x_interval[1]) / n
+    x = step_size .* collect(1:n) .+ x_interval[1]
+    poly_xs = hcat([x.^i for i in min_k:k]...)
+    return poly_xs * coefs
 end
 
 
@@ -96,4 +102,12 @@ function struct2df(xs)
     return DataFrame(
         [[getfield(x, field) for x in xs] for field in fields],
         fields)
+end
+
+
+# TODO this is really slow...
+function shift(x::AbstractVector, k::Integer)
+    y = circshift(x, k)
+    y[1:min(end, k)] = 0
+    return y
 end
