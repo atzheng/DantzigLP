@@ -9,7 +9,7 @@ type FusedDantzigMatrix <: AbstractMatrix{Number}
     n::Integer
     k::Integer
     # Stored values for fast computation
-    cum_sums :: Array{Number, 2}  # Cumulative sums up to order k (n x k Array)
+    cum_sums :: Vector  # Cumulative sums up to order k (n x k Array)
     U :: Array{Number, 2}  # From SVD of first k columns of H (n x k Array)
 end
 
@@ -19,9 +19,12 @@ size(A :: FusedDantzigMatrix) = (A.n, A.n - A.k)
 """Typical constructor"""
 function FusedDantzigMatrix(n::Int, k::Int)
     X1 = ones(n)
-    normalizer = factorial(k) / (n ^ k)
-    cum_sums = cumsum_k(X1, k) * normalizer
-    Xa = hcat([shift(cum_sums[:, i], i - 1) for i in 1:k]...)
+    # normalizer = factorial(k - 1) / (n ^ (k - 1))
+    normalizer = 1
+    cum_sums = cumsum_k(X1, k - 1) * normalizer
+
+    Xa = hcat([shift(collect(1:n), j - 1)  for j in 1:k]...)
+    # Xa = hcat([collect(1:n) .^ (j - 1) ./ n ^ (j - 1) for j in 1:k]...)
     U = svd(Xa)[1]
     return FusedDantzigMatrix(n, k, cum_sums, U)
 end
@@ -43,9 +46,7 @@ function getindex(A::FusedDantzigMatrix, i::Colon, j::Vector)
         else
             sorted_j = sort(j) .- 1 .+ A.k
             diffs = sorted_j - shift(sorted_j, 1)
-            Xj = hcat(accumulate((vec, i) -> shift(vec, i),
-                                 A.cum_sums[:, A.k + 1],
-                                 diffs)...)
+            Xj = hcat(accumulate((vec, i) -> shift(vec, i), A.cum_sums, diffs)...)
             Aj = invdiff_matvecmult(A, Xj)
         end
     end
@@ -58,10 +59,7 @@ function cumsum_k(x::AbstractVector, k::Integer)
     if k == 0
         return x
     else
-        prev_cumsums = cumsum_k(x, k - 1)
-        last_cumsum = prev_cumsums[:, end]
-        current_cumsum = cumsum(last_cumsum)
-        return hcat(prev_cumsums, current_cumsum)
+        return cumsum(cumsum_k(x, k - 1))
     end
 end
 
@@ -76,7 +74,7 @@ function getindex(A :: FusedDantzigMatrix, i :: Integer, j :: Integer)
             return j / A.n
         end
     else
-        Xj = shift(A.cum_sums[:, A.k + 1], A.k + j - 1)
+        Xj = shift(A.cum_sums, A.k + j - 1)
         return (Xj - A.U * (A.U'Xj))[i]
     end
 end
@@ -132,9 +130,8 @@ function dantzig_trend_filtering(y, delta, k;
                                         initializer_fn = initializer_fn,
                                         reduced_cost_fn = reduced_cost_fn,
                                         args...)
-    return model, coefs
-    # original_coefs = recover_original_coefs(coefs, dantzig_X, y, k)
-    # return model, original_coefs
+    original_coefs = recover_original_coefs(coefs, invdiff(X_generator), y, k)
+    return model, original_coefs
 end
 
 
@@ -174,13 +171,14 @@ end
 
 function recover_original_coefs(coefs_b, X, y, k)
     n = length(y)
-    Xa = X[:, 1:k]
-    Xb = X[:, (k + 1):end]
+    Xa = X[:, collect(1:k)]
+    Xb = X[:, collect((k + 1):end)]
 
+    X_generator = FusedDantzigMatrix(n, k)
     residuals = y - Xb * coefs_b
     coefs_a = inv(full(Xa'Xa)) * Xa'residuals
 
-    return inv_difference_operator(n, k) * vcat(coefs_a, coefs_b)
+    return invdiff(X_generator) * vcat(coefs_a, coefs_b)
 end
 
 
@@ -282,4 +280,27 @@ function round_small(x, tol)
     end
     return results
 end
+
+function tibs_M(n, k)
+    first_k = hcat(speye(k, k), spzeros(k, n - k))
+    rest = hcat(spzeros(n - k, k), LowerTriangular(ones(n-k, n-k)))
+    return vcat(first_k, rest)
+end
+
+function tibs_invdiff(n, k)
+    normalizer = factorial(k - 1) / (n ^ (k - 1))
+    return reduce(*, [tibs_M(n, i) for i in 0:k]) * normalizer |> full
+end
+
+function invdiff(A)
+    # normalizer = factorial(A.k - 1) / (A.n ^ (A.k - 1))
+    normalizer = 1
+    @show(normalizer)
+    # Xa = hcat([shift(collect(1:A.n), j - 1) .^ (j - 1) ./ A.n ^ (j - 1) for j in 1:A.k]...)
+    Xa = hcat([shift(collect(1:A.n), j - 1)  for j in 1:A.k]...)
+    cum_result = cumsum_k(ones(A.n), A.k - 1) .* normalizer
+    Xb = hcat([sparse(shift(cum_result, i)) for i in A.k:(A.n - 1)]...)
+    return hcat(Xa, Xb)
+end
+
 end
