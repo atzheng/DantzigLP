@@ -1,7 +1,8 @@
 module FusedDantzig
 include("dantzig.jl")
+include("utils.jl")
 using Lasso
-import Base.getindex, Base.size
+import Base.getindex, Base.size, Base.sort
 
 
 type FusedDantzigMatrix <: AbstractMatrix{Number}
@@ -14,6 +15,7 @@ end
 
 size(A :: FusedDantzigMatrix) = (A.n, A.n - A.k)
 
+
 """Typical constructor"""
 function FusedDantzigMatrix(n::Int, k::Int)
     X1 = ones(n)
@@ -25,11 +27,16 @@ function FusedDantzigMatrix(n::Int, k::Int)
 end
 
 
-function getindex(A::FusedDantzigMatrix, i::Colon, j::Union{Integer, Vector})
+function getindex(A::FusedDantzigMatrix, i::Colon, j::Integer)
+    return vec(getindex(A, :, [j]))
+end
+
+
+function getindex(A::FusedDantzigMatrix, i::Colon, j::Vector)
     if A.k == 1
-        upper = - ones(j) * (1 - j / A.n)
-        lower = ones(n - j) * (j / A.n)
-        return vcat(upper, lower)
+        upper = [- ones(jx) * (1 - jx / A.n) for jx in j]
+        lower = [ones(A.n - jx) * (jx / A.n) for jx in j]
+        Aj = hcat([vcat(u, l) for (u, l) in zip(upper, lower)]...)
     else
         if maximum(j) > A.n - A.k
             throw(BoundsError())
@@ -39,17 +46,10 @@ function getindex(A::FusedDantzigMatrix, i::Colon, j::Union{Integer, Vector})
             Xj = hcat(accumulate((vec, i) -> shift(vec, i),
                                  A.cum_sums[:, A.k + 1],
                                  diffs)...)
-            return invdiff_matvecmult(A, Xj)
+            Aj = invdiff_matvecmult(A, Xj)
         end
     end
-end
-
-
-# TODO Can we do a fast getrow too?
-function shift(x::AbstractVector, k::Integer)
-    y = circshift(x, k)
-    y[1:min(end, k)] = 0
-    return y
+    return Aj
 end
 
 
@@ -113,11 +113,50 @@ function fused_dantzig_1D(y, delta;
 end
 
 
-"""
-TODO Add calls to the "Fast and Flexible ADMM Algorithms for TF" routine
-for initialization.
-"""
-function dantzig_trend_filtering(y, delta, k; X = speye(length(y)), args...)
+function dantzig_trend_filtering(y, delta, k;
+                                 lazy_X = false,
+                                 initializer_fn = tf_initializer(k),
+                                 reduced_cost_fn = tf_reduced_cost_fn(k),
+                                 args...)
+    n = length(y)
+    X_generator = FusedDantzigMatrix(n, k)
+    dantzig_y = invdiff_matvecmult(X_generator, y)
+
+    if lazy_X
+        dantzig_X = X_generator
+    else
+        dantzig_X = X_generator[:, collect(1:(n - k))]
+    end
+
+    model, coefs = DantzigLP.dantzig_lp(dantzig_y, dantzig_X, delta;
+                                        initializer_fn = initializer_fn,
+                                        reduced_cost_fn = reduced_cost_fn,
+                                        args...)
+    return model, coefs
+    # original_coefs = recover_original_coefs(coefs, dantzig_X, y, k)
+    # return model, original_coefs
+end
+
+
+# Function factories for trend filtering
+function tf_reduced_cost_fn(k)
+    if k == 1
+        fn = fused_dantzig_reduced_costs
+    else
+        fn = DantzigLP.get_reduced_costs
+    end
+    return fn
+end
+
+
+function tf_initializer(k)
+    initializer(X, y, delta) = trend_filtering_initializer(X, y, delta, k)
+end
+
+
+
+function baseline_dantzig_trend_filtering(y, delta, k;
+                                          X = speye(length(y)), args...)
     n, p = size(X)
     S = inv_difference_operator(p, k)
 
@@ -133,10 +172,10 @@ function dantzig_trend_filtering(y, delta, k; X = speye(length(y)), args...)
 end
 
 
-function recover_original_coefs(coefs_b, fused_X, y, k)
+function recover_original_coefs(coefs_b, X, y, k)
     n = length(y)
-    Xa = fused_X[:, 1:k]
-    Xb = fused_X[:, (k + 1):end]
+    Xa = X[:, 1:k]
+    Xb = X[:, (k + 1):end]
 
     residuals = y - Xb * coefs_b
     coefs_a = inv(full(Xa'Xa)) * Xa'residuals
@@ -146,17 +185,23 @@ end
 
 
 """ Uses the Lasso.jl implementation of the 1D fused lasso DP algorithm."""
-function fused_lasso_1D_initializer(X, y, delta)
+function trend_filtering_initializer(X, y, delta, k)
     n = length(y)
-    return sparse(difference_operator(n, 1) * fit(FusedLasso, y, delta).β)
+    if k == 1  # TODO k numbering starrts from 1 here, as opposed to 0 in the original tf paper
+        raw_coefs = fit(FusedLasso, y, delta).β
+    else
+        raw_coefs = fit(TrendFilter, y, k - 1, delta).β
+    end
+    return round_small(difference_operator(n, k) * raw_coefs, 1e-4)
 end
 
 
+
 """
-For X = I, we have a linear-time method for getting the reduced costs based
-on the structure of the matrix in place of the data matrix.
+For k = 1 and X = I, we have a linear-time method for getting the reduced costs
+based on the structure of the matrix in place of the data matrix.
 """
-function get_reduced_costs(model)
+function fused_dantzig_reduced_costs(model)
     n, p = size(model.X)
     duals = model.gurobi_model.linconstrDuals[1:n]
 
@@ -183,25 +228,6 @@ end
 
 
 """
-TODO This is an inefficient implementation; there exists an explicit
-form for entries of this matrix
-"""
-function difference_operator(n :: Integer, k :: Integer)
-     if k == 1
-         operator = spzeros(n - 1, n)
-         for i in 1:(n - 1)
-             operator[i, i] = -1
-             operator[i, i + 1] = 1
-         end
-         return operator
-     else
-         return difference_operator(n - k + 1, 1) *
-             difference_operator(n, k - 1)
-     end
-end
-
-
-"""
 Note: The original trend filtering paper has a different definition for this
 matrix that has an explicit form for all k. However, this isn't useful unless
 the fusion operator also has an explicit form for all k.
@@ -218,4 +244,42 @@ function fusion_operator(X :: AbstractMatrix, k :: Integer)
 end
 
 
+# Baselines
+# ==============================================================================
+# Inefficient implementations of difference and inverse difference operators,
+# for testing and reference.
+function difference_operator(n :: Integer, k :: Integer)
+    if k == 0
+        return speye(n, n)
+    elseif k == 1
+        operator = spzeros(n - 1, n)
+        for i in 1:(n - 1)
+            operator[i, i] = -1
+            operator[i, i + 1] = 1
+        end
+        return operator
+    else
+        return difference_operator(n - k + 1, 1) *
+            difference_operator(n, k - 1)
+    end
+end
+
+
+function inv_difference_operator(n, k)
+    diffops = [difference_operator(n, ki)[1, :] for ki in 0:k-1]
+    first_k = hcat(diffops...)'
+    rest = difference_operator(n, k)
+    return vcat(first_k, rest) |> full |> inv
+end
+
+
+function round_small(x, tol)
+    results = spzeros(length(x))
+    for i in 1:length(x)
+        if abs(x[i]) > tol
+            results[i] = x[i]
+        end
+    end
+    return results
+end
 end
