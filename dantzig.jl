@@ -259,8 +259,8 @@ function get_reduced_costs(model)
     # Compute reduced costs separately for the positive and negative
     # components of Beta
     duals = model.gurobi_model.linconstrDuals[1:n]
-    pos_reduced_costs = 1 - transpose(duals) * -model.X
-    neg_reduced_costs = 1 - transpose(duals) * model.X
+    pos_reduced_costs = [1 - dot(duals, -model.X[:, j]) for j in 1:p]
+    neg_reduced_costs = [1 - dot(duals, model.X[:, j]) for j in 1:p]
     return (pos_reduced_costs, neg_reduced_costs)
 end
 
@@ -269,10 +269,11 @@ end
 # ------------------------------------------------------------------------------
 function generate_constraints!(model, delta, max_constraints = 50;
                                verbose = false)
-    n, p = size(model.X)
-    Xt = model.X'
+    X = model.X
+    n, p = size(X)
     TOL = 1e-6
-    constraint_values = Xt * getvalue(model.residuals)
+    resid_vals = getvalue(model.residuals)
+    constraint_values = [dot(X[:, j], resid_vals) for j in 1:p]
     constraint_indices = sortperm(abs.(constraint_values), rev = true)
 
     new_constrs = []
@@ -281,13 +282,13 @@ function generate_constraints!(model, delta, max_constraints = 50;
         if val < -delta - TOL
             # if verbose info("Constraint violated! val = $val") end
             new_constr = @constraint(model.gurobi_model,
-                                     dot(Xt[row, :], model.residuals) >= -delta)
+                                     dot(X[:, row], model.residuals) >= -delta)
             push!(model.linf_neg_constrs, new_constr)
             push!(new_constrs, new_constr)
         elseif val > delta + TOL
             # if verbose info("Constraint violated! val = $val") end
             new_constr = @constraint(model.gurobi_model,
-                                     dot(Xt[row, :], model.residuals) <= delta)
+                                     dot(X[:, row], model.residuals) <= delta)
             push!(model.linf_pos_constrs, new_constr)
             push!(new_constrs, new_constr)
         end
@@ -314,6 +315,8 @@ function initialize_model(X, y, delta, initializer_fn,
     # --- Generate Lasso Solution ---
     if verbose info("Finding initial solution...") end
     initializer_soln, initializer_seconds = @timed initializer_fn(X, y, delta)
+    if verbose info(@sprintf("Initial solution found in %d seconds",
+                             initializer_seconds)) end
     # --- Initialize constraints ---
     if constraint_generation == false
         init_constrs = 1:p
@@ -325,9 +328,9 @@ function initialize_model(X, y, delta, initializer_fn,
 
     # TODO Only need to add either the positive or negative constraints
     linf_pos_constrs =
-        @constraint(gurobi_model, X'[init_constrs, :] * residuals .<= delta)
+        @constraint(gurobi_model, X[:, init_constrs]' * residuals .<= delta)
     linf_neg_constrs =
-        @constraint(gurobi_model, X'[init_constrs, :] * residuals .>= -delta)
+        @constraint(gurobi_model, X[:, init_constrs]' * residuals .>= -delta)
 
     model = dantzig_model(gurobi_model, [], [], [], [],
                           residuals, residual_constrs,
