@@ -59,11 +59,11 @@ end
 
 function dantzig_lp(y, X, delta;
                     initializer_fn = lasso_initializer,
-                    reduced_cost_fn = get_reduced_costs,
+                    colgen_fn = generate_columns!,
+                    colgen_args = [(:max_columns, 5)],
                     constraint_generation = true,
                     constraints_per_iter = 50,
                     column_generation = true,
-                    columns_per_iter = 5,
                     verbose = false,
                     timeout = Inf)
     model = initialize_model(
@@ -87,21 +87,20 @@ function dantzig_lp(y, X, delta;
         diagnostics = vcat([soln[2] for soln in solutions]...)
         coefs = [soln[1] for soln in solutions]
     else
+        partial_colgen_fn(model) = colgen_fn(model; colgen_args...)
         coefs, diagnostics =
-            solve_model(model, delta, reduced_cost_fn,
+            solve_model(model, delta, partial_colgen_fn,
                         constraint_generation, constraints_per_iter,
-                        column_generation, columns_per_iter,
-                        verbose, timeout)
+                        column_generation, verbose, timeout)
     end
     model.diagnostics = diagnostics
     return (model, coefs)
 end
 
 
-function solve_model(model, delta, reduced_cost_fn,
+function solve_model(model, delta, colgen_fn,
                      constraint_generation, constraints_per_iter,
-                     column_generation, columns_per_iter,
-                     verbose, timeout)
+                     column_generation, verbose, timeout)
     # Intialize tracking for diagnostics
     start_time = time_ns()
     columns_generated = 0
@@ -143,19 +142,11 @@ function solve_model(model, delta, reduced_cost_fn,
         # Column generation
         if column_generation
             colgen_start_ts = time_ns()
-            new_columns = generate_columns(
-                model, reduced_cost_fn, columns_per_iter)
+            new_columns = colgen_fn(model)
 
             if length(new_columns) == 0
                 status = :Optimal
             else
-                for (idx, sign) in new_columns
-                    if verbose
-                        info("Column generation iteration $columns_generated:"
-                             * "adding beta $idx")
-                    end
-                    add_beta!(model, idx, sign)
-                end
                 solve_status, solve_time = @timed solve(model.gurobi_model)
                 gurobi_seconds += solve_time
                 columns_generated += length(new_columns)
@@ -229,8 +220,9 @@ function add_beta!(model, idx, sgn)
 end
 
 
-function generate_columns(model, reduced_cost_fn, max_columns)
-    pos_costs, neg_costs = reduced_cost_fn(model)
+function generate_columns!(model; max_columns = 5)
+    # Compute reduced costs
+    pos_costs, neg_costs = get_reduced_costs(model)
     pos_costs[model.pos_beta_indices] = Inf
     neg_costs[model.neg_beta_indices] = Inf
 
@@ -238,6 +230,7 @@ function generate_columns(model, reduced_cost_fn, max_columns)
     pos_min_indices = sortperm(vec(pos_costs))[1:max_columns]
     neg_min_indices = sortperm(vec(neg_costs))[1:max_columns]
 
+    # Sort reduced cost vectors
     # (idx, sgn) tuples for return values
     pos_return_vals = zip_collect(
         pos_min_indices, ones(length(pos_min_indices)))
@@ -248,7 +241,14 @@ function generate_columns(model, reduced_cost_fn, max_columns)
     neg_min_costs = zip_collect(neg_costs[neg_min_indices], neg_return_vals)
 
     all_costs = vcat(pos_min_costs, neg_min_costs)
-    return [x[2] for x in all_costs if x[1] < -TOL]
+    new_columns = [x[2] for x in all_costs if x[1] < -TOL]
+
+    # Add betas
+    for (idx, sign) in new_columns
+        add_beta!(model, idx, sign)
+    end
+
+    return new_columns
 end
 
 zip_collect(args...) = collect(zip(map(vec, args)...))
