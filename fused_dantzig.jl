@@ -19,12 +19,9 @@ size(A :: FusedDantzigMatrix) = (A.n, A.n - A.k)
 """Typical constructor"""
 function FusedDantzigMatrix(n::Int, k::Int)
     X1 = ones(n)
-    # normalizer = factorial(k - 1) / (n ^ (k - 1))
-    normalizer = 1
-    cum_sums = cumsum_k(X1, k - 1) * normalizer
+    cum_sums = cumsum_k(X1, k - 1)
 
-    Xa = hcat([shift(collect(1:n), j - 1)  for j in 1:k]...)
-    # Xa = hcat([collect(1:n) .^ (j - 1) ./ n ^ (j - 1) for j in 1:k]...)
+    Xa = hcat([shift(cumsum_k(ones(n), j), j) for j in 0:(k - 1)]...)
     U = svd(Xa)[1]
     return FusedDantzigMatrix(n, k, cum_sums, U)
 end
@@ -288,19 +285,21 @@ function tibs_M(n, k)
 end
 
 function tibs_invdiff(n, k)
-    normalizer = factorial(k - 1) / (n ^ (k - 1))
+    # normalizer = factorial(k - 1) / (n ^ (k - 1))
+    normalizer = 1
     return reduce(*, [tibs_M(n, i) for i in 0:k]) * normalizer |> full
 end
 
 function invdiff(A)
-    # normalizer = factorial(A.k - 1) / (A.n ^ (A.k - 1))
-    normalizer = 1
-    @show(normalizer)
-    # Xa = hcat([shift(collect(1:A.n), j - 1) .^ (j - 1) ./ A.n ^ (j - 1) for j in 1:A.k]...)
-    Xa = hcat([shift(collect(1:A.n), j - 1)  for j in 1:A.k]...)
-    cum_result = cumsum_k(ones(A.n), A.k - 1) .* normalizer
+    Xa = hcat([shift(cumsum_k(ones(A.n), j), j) for j in 0:(A.k - 1)]...)
+    cum_result = cumsum_k(ones(A.n), A.k - 1)
     Xb = hcat([sparse(shift(cum_result, i)) for i in A.k:(A.n - 1)]...)
     return hcat(Xa, Xb)
+end
+
+
+function Atb(A::FusedDantzigMatrix, b)
+    # TODO
 end
 
 end
