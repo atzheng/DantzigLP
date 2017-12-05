@@ -259,10 +259,13 @@ function get_reduced_costs(model)
     # Compute reduced costs separately for the positive and negative
     # components of Beta
     duals = model.gurobi_model.linconstrDuals[1:n]
-    pos_reduced_costs = [1 - dot(duals, -model.X[:, j]) for j in 1:p]
-    neg_reduced_costs = [1 - dot(duals, model.X[:, j]) for j in 1:p]
+    pos_reduced_costs = 1 + xtA(p, model.X)
+    neg_reduced_costs = 1 - xtA(p, model.X)
     return (pos_reduced_costs, neg_reduced_costs)
 end
+
+
+xtA(x::Vector, A::Matrix) = x'A
 
 
 # Constraint Generation
@@ -273,7 +276,7 @@ function generate_constraints!(model, delta, max_constraints = 50;
     n, p = size(X)
     TOL = 1e-6
     resid_vals = getvalue(model.residuals)
-    constraint_values = [dot(X[:, j], resid_vals) for j in 1:p]
+    constraint_values = xtA(resid_vals, X)
     constraint_indices = sortperm(abs.(constraint_values), rev = true)
 
     new_constrs = []

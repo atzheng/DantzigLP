@@ -2,85 +2,6 @@ module FusedDantzig
 include("dantzig.jl")
 include("utils.jl")
 using Lasso
-import Base.getindex, Base.size, Base.sort
-
-
-type FusedDantzigMatrix <: AbstractMatrix{Number}
-    n::Integer
-    k::Integer
-    # Stored values for fast computation
-    cum_sums :: Vector  # Cumulative sums up to order k (n x k Array)
-    U :: Array{Number, 2}  # From SVD of first k columns of H (n x k Array)
-end
-
-size(A :: FusedDantzigMatrix) = (A.n, A.n - A.k)
-
-
-"""Typical constructor"""
-function FusedDantzigMatrix(n::Int, k::Int)
-    X1 = ones(n)
-    cum_sums = cumsum_k(X1, k - 1)
-
-    Xa = hcat([shift(cumsum_k(ones(n), j), j) for j in 0:(k - 1)]...)
-    U = svd(Xa)[1]
-    return FusedDantzigMatrix(n, k, cum_sums, U)
-end
-
-
-function getindex(A::FusedDantzigMatrix, i::Colon, j::Integer)
-    return vec(getindex(A, :, [j]))
-end
-
-
-function getindex(A::FusedDantzigMatrix, i::Colon, j::Vector)
-    if A.k == 1
-        upper = [- ones(jx) * (1 - jx / A.n) for jx in j]
-        lower = [ones(A.n - jx) * (jx / A.n) for jx in j]
-        Aj = hcat([vcat(u, l) for (u, l) in zip(upper, lower)]...)
-    else
-        if maximum(j) > A.n - A.k
-            throw(BoundsError())
-        else
-            sorted_j = sort(j) .- 1 .+ A.k
-            diffs = sorted_j - shift(sorted_j, 1)
-            Xj = hcat(accumulate((vec, i) -> shift(vec, i), A.cum_sums, diffs)...)
-            Aj = invdiff_matvecmult(A, Xj)
-        end
-    end
-    return Aj
-end
-
-
-"""kth order cumulative sum"""
-function cumsum_k(x::AbstractVector, k::Integer)
-    if k == 0
-        return x
-    else
-        return cumsum(cumsum_k(x, k - 1))
-    end
-end
-
-
-function getindex(A :: FusedDantzigMatrix, i :: Integer, j :: Integer)
-    if A.k == 1
-        if i > A.n | j > (A.n - 1)
-            throw(BoundsError())
-        elseif i <= j
-            return - (1 - j / A.n)
-        else
-            return j / A.n
-        end
-    else
-        Xj = shift(A.cum_sums, A.k + j - 1)
-        return (Xj - A.U * (A.U'Xj))[i]
-    end
-end
-
-
-# TODO this is poorly named
-function invdiff_matvecmult(A::FusedDantzigMatrix, x::Array)
-    return x - A.U * (A.U'x)
-end
 
 
 # Dantzig trend filtering
@@ -146,7 +67,6 @@ end
 function tf_initializer(k)
     initializer(X, y, delta) = trend_filtering_initializer(X, y, delta, k)
 end
-
 
 
 function baseline_dantzig_trend_filtering(y, delta, k;
@@ -295,11 +215,6 @@ function invdiff(A)
     cum_result = cumsum_k(ones(A.n), A.k - 1)
     Xb = hcat([sparse(shift(cum_result, i)) for i in A.k:(A.n - 1)]...)
     return hcat(Xa, Xb)
-end
-
-
-function Atb(A::FusedDantzigMatrix, b)
-    # TODO
 end
 
 end
