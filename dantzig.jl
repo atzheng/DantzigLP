@@ -1,17 +1,14 @@
-module DantzigLP
 using JuMP, Gurobi, MathProgBase, Lasso, DataFrames
 
-export baseline_dantzig, dantzig_lp, lasso_initializer,
-    max_correlation_initializer, composite_initializer, recursive_initializer
-
 TOL = 1e-8
-
 
 """
 Struct to hold constraint refs and mutable variables for column
 and constraint generation.
 """
-type dantzig_model
+abstract type DantzigModel end
+
+type BasicDantzigModel <: DantzigModel
     gurobi_model     # Gurobi model object (mutable)
     pos_betas        # Postive Beta variables already in the model (mutable)
     pos_beta_indices # Indices corresponding to entries of pos_betas (mutable)
@@ -27,7 +24,7 @@ type dantzig_model
     initializer_secs # Initializer runtime
 end
 
-Base.show(io::IO, x::dantzig_model) = show(io, x.gurobi_model)
+Base.show(io::IO, x::DantzigModel) = show(io, x.gurobi_model)
 
 
 """
@@ -60,38 +57,41 @@ end
 function dantzig_lp(y, X, delta;
                     initializer_fn = lasso_initializer,
                     colgen_fn = generate_columns!,
-                    colgen_args = [(:max_columns, 5)],
+                    colgen_args = [(:max_columns, 40)],
+                    congen_fn = generate_constraints!,
+                    congen_args = [(:max_constraints, 50)],
                     constraint_generation = true,
-                    constraints_per_iter = 50,
                     column_generation = true,
                     verbose = false,
-                    timeout = Inf)
-    model = initialize_model(
+                    timeout = Inf,
+                    model_initializer = initialize_model)
+
+    model = model_initializer(
         X, y, minimum(delta), initializer_fn,
         constraint_generation, column_generation, verbose)
 
-    if isa(delta, Array)
+    partial_colgen_fn(model) = colgen_fn(model; colgen_args...)
+    partial_congen_fn(model, delta) = congen_fn(model, delta; congen_args...)
+    solver(model, delta) = solve_model(model, delta, partial_colgen_fn,
+                                       constraint_generation, partial_congen_fn,
+                                       column_generation, verbose, timeout)
+
+    if isa(delta, Array)  # Solve a path of deltas
         solutions = []
-        for d in delta
+        for d in delta  # TODO enforce an ordering of deltas
             for constr in model.linf_pos_constrs
                 JuMP.setRHS(constr, d)
             end
             for constr in model.linf_neg_constrs
                 JuMP.setRHS(constr, -d)
             end
-            solution = solve_model(model, d, reduced_cost_fn,
-                                   constraint_generation, column_generation,
-                                   verbose, timeout)
+            solution = solver(model, d)
             push!(solutions, solution)
         end
         diagnostics = vcat([soln[2] for soln in solutions]...)
         coefs = [soln[1] for soln in solutions]
     else
-        partial_colgen_fn(model) = colgen_fn(model; colgen_args...)
-        coefs, diagnostics =
-            solve_model(model, delta, partial_colgen_fn,
-                        constraint_generation, constraints_per_iter,
-                        column_generation, verbose, timeout)
+        coefs, diagnostics = solver(model, delta)
     end
     model.diagnostics = diagnostics
     return (model, coefs)
@@ -99,7 +99,7 @@ end
 
 
 function solve_model(model, delta, colgen_fn,
-                     constraint_generation, constraints_per_iter,
+                     constraint_generation, congen_fn,
                      column_generation, verbose, timeout)
     # Intialize tracking for diagnostics
     start_time = time_ns()
@@ -110,6 +110,12 @@ function solve_model(model, delta, colgen_fn,
     gurobi_seconds = 0
     initial_vars = union(model.pos_beta_indices, model.neg_beta_indices)
     solve_status, solve_time = @timed solve(model.gurobi_model)
+
+    if solve_status == :Infeasible
+        warn("Infeasible initial model.")
+        return solve_status, DataFrame()
+    end
+
     gurobi_seconds += solve_time
     status = :InProgress
 
@@ -125,16 +131,29 @@ function solve_model(model, delta, colgen_fn,
         # Constraint generation
         if constraint_generation
             congen_start_ts = time_ns()
-            new_constrs = generate_constraints!(
-                model, delta, constraints_per_iter)
-            constraints_generated += length(new_constrs)
-            while length(new_constrs) > 0
+            pos_constrs = []
+            neg_constrs = []
+
+            new_pos_constrs, new_neg_constrs = congen_fn(model, delta)
+            push!(pos_constrs, new_pos_constrs)
+            push!(neg_constrs, new_neg_constrs)
+
+            while length(new_pos_constrs) + length(new_neg_constrs) > 0
                 solve_status, solve_time = @timed solve(model.gurobi_model)
                 gurobi_seconds += solve_time
-                new_constrs = generate_constraints!(
-                    model, delta, constraints_per_iter)
-                constraints_generated += length(new_constrs)
+                new_pos_constrs, new_neg_constrs = congen_fn(model, delta)
+                push!(pos_constrs, new_pos_constrs)
+                push!(neg_constrs, new_neg_constrs)
             end
+
+            flat_pos_constrs = vcat(pos_constrs...)
+            flat_neg_constrs = vcat(neg_constrs...)
+
+            n_new_constrs = length(flat_pos_constrs) + length(flat_neg_constrs)
+            constraints_generated += n_new_constrs
+            if verbose info(@sprintf("Generated %d constraints.",
+                                     n_new_constrs)) end
+
             constraint_generation_seconds +=
                 (time_ns() - congen_start_ts) / 1.0e9
         end
@@ -143,7 +162,8 @@ function solve_model(model, delta, colgen_fn,
         if column_generation
             colgen_start_ts = time_ns()
             new_columns = colgen_fn(model)
-
+            if verbose info(@sprintf("Generated %d columns.",
+                                    length(new_constrs))) end
             if length(new_columns) == 0
                 status = :Optimal
             else
@@ -204,6 +224,7 @@ function add_beta!(model, idx, sgn)
         beta_indices = model.neg_beta_indices
         betas = model.neg_betas
     end
+
     if idx in beta_indices
         return nothing
     else
@@ -220,9 +241,12 @@ function add_beta!(model, idx, sgn)
 end
 
 
-function generate_columns!(model; max_columns = 5)
+function generate_columns!(model;
+                           max_columns = 5,
+                           beta_adder = add_beta!,
+                           reduced_cost_fn = get_reduced_costs)
     # Compute reduced costs
-    pos_costs, neg_costs = get_reduced_costs(model)
+    pos_costs, neg_costs = reduced_cost_fn(model)
     pos_costs[model.pos_beta_indices] = Inf
     neg_costs[model.neg_beta_indices] = Inf
 
@@ -245,7 +269,7 @@ function generate_columns!(model; max_columns = 5)
 
     # Add betas
     for (idx, sign) in new_columns
-        add_beta!(model, idx, sign)
+        beta_adder(model, idx, sign)
     end
 
     return new_columns
@@ -259,8 +283,8 @@ function get_reduced_costs(model)
     # Compute reduced costs separately for the positive and negative
     # components of Beta
     duals = model.gurobi_model.linconstrDuals[1:n]
-    pos_reduced_costs = 1 + xtA(p, model.X)
-    neg_reduced_costs = 1 - xtA(p, model.X)
+    pos_reduced_costs = 1 + xtA(duals, model.X)
+    neg_reduced_costs = 1 - xtA(duals, model.X)
     return (pos_reduced_costs, neg_reduced_costs)
 end
 
@@ -270,33 +294,46 @@ xtA(x::Vector, A::Matrix) = x'A
 
 # Constraint Generation
 # ------------------------------------------------------------------------------
-function generate_constraints!(model, delta, max_constraints = 50;
-                               verbose = false)
+function generate_constraints!(model, delta;
+                               max_constraints = 50,
+                               verbose = false,
+                               constr_adder = add_Xtr_constr!)
     X = model.X
     n, p = size(X)
     TOL = 1e-6
     resid_vals = getvalue(model.residuals)
-    constraint_values = xtA(resid_vals, X)
+    constraint_values = vec(xtA(resid_vals, X))
     constraint_indices = sortperm(abs.(constraint_values), rev = true)
 
-    new_constrs = []
+    new_pos_constrs = []
+    new_neg_constrs = []
     for row in constraint_indices[1:min(max_constraints, p)]
         val = constraint_values[row]
         if val < -delta - TOL
-            # if verbose info("Constraint violated! val = $val") end
-            new_constr = @constraint(model.gurobi_model,
-                                     dot(X[:, row], model.residuals) >= -delta)
-            push!(model.linf_neg_constrs, new_constr)
-            push!(new_constrs, new_constr)
+            new_constr = constr_adder(model, delta, row, -1)
+            push!(new_neg_constrs, new_constr)
         elseif val > delta + TOL
-            # if verbose info("Constraint violated! val = $val") end
-            new_constr = @constraint(model.gurobi_model,
-                                     dot(X[:, row], model.residuals) <= delta)
-            push!(model.linf_pos_constrs, new_constr)
-            push!(new_constrs, new_constr)
+            new_constr = constr_adder(model, delta, row, 1)
+            push!(new_pos_constrs, new_constr)
         end
     end
-    return new_constrs
+    return new_pos_constrs, new_neg_constrs
+end
+
+
+function add_Xtr_constr!(model, delta, idx, sign)
+    if sign == -1
+        new_constr = @constraint(
+            model.gurobi_model,
+            dot(model.X[:, idx], model.residuals) >= -delta)
+        push!(model.linf_neg_constrs, new_constr)
+    elseif sign == 1
+        new_constr = @constraint(
+            model.gurobi_model,
+            dot(model.X[:, idx], model.residuals) <= delta)
+        push!(model.linf_pos_constrs, new_constr)
+    end
+    return new_constr
 end
 
 
@@ -335,19 +372,23 @@ function initialize_model(X, y, delta, initializer_fn,
     linf_neg_constrs =
         @constraint(gurobi_model, X[:, init_constrs]' * residuals .>= -delta)
 
-    model = dantzig_model(gurobi_model, [], [], [], [],
-                          residuals, residual_constrs,
-                          linf_pos_constrs, linf_neg_constrs, X,
-                          nothing, initializer_seconds)
+    model = BasicDantzigModel(gurobi_model, [], [], [], [],
+                              residuals, residual_constrs,
+                              linf_pos_constrs, linf_neg_constrs, X,
+                              nothing, initializer_seconds)
 
     # --- Initialize variables
-    for (idx, coef) in enumerate(initializer_soln)
-        if column_generation
-            if coef != 0
-                new_var = add_beta!(model, idx, sign(coef))
-                setvalue(new_var, coef)
-            end
-        else
+    if column_generation
+        for idx in initializer_soln.nzind
+            coef = initializer_soln[idx]
+            # Only need to add one sign, but that doesn't work with an array
+            # of deltas. TODO
+            new_var = add_beta!(model, idx, sign(coef))
+            new_var = add_beta!(model, idx, -sign(coef))
+            setvalue(new_var, coef)
+        end
+    else
+        for idx in 1:p
             add_beta!(model, idx, 1)
             add_beta!(model, idx, -1)
         end
@@ -356,10 +397,16 @@ function initialize_model(X, y, delta, initializer_fn,
 end
 
 
-function lasso_initializer(X, y, delta)
+function lasso_initializer(X, y, delta::Number)
+    return lasso_initializer(X, y, [delta])
+end
+
+
+function lasso_initializer(X, y, delta::Array)
     n, p = size(X)
-    return vec(fit(LassoPath, X, y, λ = [delta / n],
-                   maxncoef = p, standardize = false).coefs)
+    soln = fit(LassoPath, X, y, λ = delta ./ n,
+               maxncoef = p, standardize = false).coefs
+    return merge_vectors([soln[:, j] for j in 1:size(soln, 2)]...)
 end
 
 
@@ -419,4 +466,4 @@ function merge_vectors(xs...)
 end
 
 # Module end
-end
+# end
