@@ -7,6 +7,7 @@ Struct to hold constraint refs and mutable variables for column
 and constraint generation.
 """
 abstract type DantzigModel end
+Base.show(io::IO, x::DantzigModel) = show(io, x.gurobi_model)
 
 type BasicDantzigModel <: DantzigModel
     gurobi_model     # Gurobi model object (mutable)
@@ -23,7 +24,19 @@ type BasicDantzigModel <: DantzigModel
     diagnostics      # DataFrame of diagnostics
 end
 
-Base.show(io::IO, x::DantzigModel) = show(io, x.gurobi_model)
+function BasicDantzigModel(X, y)
+    n, p = size(X)
+    gurobi_model = Model()
+
+    residuals = @variable(gurobi_model, [1:n])
+    residual_constrs = @constraint(gurobi_model, y - residuals .== 0)
+    obj = @objective(gurobi_model, Min, 0)
+
+    model = BasicDantzigModel(gurobi_model, [], [], [], [],
+                              residuals, residual_constrs,
+                              [], [], X, nothing)
+    return model
+end
 
 
 """
@@ -56,20 +69,25 @@ end
 function dantzig_lp(X, y, λ; initializer_fn = lasso_initializer, args...)
     model = construct_basic_dantzig_model(X, y)
     initial_soln, initializer_seconds = @timed initializer_fn(X, y, λ)
-    return generic_dantzig_lp(model, initial_soln; args...)
+    soln, log = solve_dantzig_lp!(model, λ, initial_soln; args...)
+    return soln, model, log
 end
 
 
-function generic_dantzig_lp(model, initial_soln;
-                            column_generation = true, max_columns = 40,
-                            constraint_generation = true, max_constraints = 50,
-                            verbose = false, timeout = Inf)
+function solve_dantzig_lp!(model, λ, initial_soln;
+                           column_generation = true, max_columns = 40,
+                           constraint_generation = true, max_constraints = 50,
+                           verbose = false, timeout = Inf,
+                           solver_params = Dict())
 
+    start_time = time_ns()
     # Initialize
     # --------------------------------------------------------------------------
-    solver = GurobiSolver(Method = -1,
-                          OutputFlag = ifelse(verbose, 1, 0),
-                          TimeLimit = timeout)
+    default_solver_params = Dict([(:Method, 1),
+                                  (:OutputFlag, ifelse(verbose, 1, 0)),
+                                  (:TimeLimit, timeout)])
+    solver_params_w_defaults = merge(default_solver_params, solver_params)
+    solver = GurobiSolver(; solver_params_w_defaults...)
     setsolver(model.gurobi_model, solver)
 
     if column_generation
@@ -79,21 +97,26 @@ function generic_dantzig_lp(model, initial_soln;
     end
 
     if constraint_generation
-        initialize_constraints!(model, initial_soln)
+        initialize_constraints!(model, minimum(λ), initial_soln)
     else
-        initialize_constraints!(model)
+        initialize_constraints!(model, minimum(λ))
     end
 
-    solver(model, delta) = solve_model(model, delta,
-                                       column_generation, max_columns,
-                                       constraint_generation, max_constraints,
-                                       verbose, timeout)
+    solver(modelx, λx) = solve_model(modelx, λx,
+                                     column_generation, max_columns,
+                                     constraint_generation, max_constraints,
+                                     verbose, timeout)
+
+    if verbose
+        info(@sprintf("Model construction finished in %.2f seconds.",
+                      (time_ns() - start_time) / 1e9))
+    end
 
     # Solve
     # --------------------------------------------------------------------------
-    if isa(delta, Array)  # Solve a path of deltas
+    if isa(λ, Array)  # Solve a path of deltas
         solutions = []
-        for d in delta  # TODO enforce an ordering of deltas
+        for d in λ # TODO enforce an ordering of deltas
             for constr in model.linf_pos_constrs
                 JuMP.setRHS(constr, d)
             end
@@ -106,10 +129,9 @@ function generic_dantzig_lp(model, initial_soln;
         diagnostics = vcat([soln[2] for soln in solutions]...)
         coefs = [soln[1] for soln in solutions]
     else
-        coefs, diagnostics = solver(model, delta)
+        coefs, diagnostics = solver(model, λ)
     end
-    model.diagnostics = diagnostics
-    return (model, coefs)
+    return (coefs, diagnostics)
 end
 
 
@@ -126,16 +148,17 @@ function solve_model(model, delta,
     gurobi_seconds = 0
     initial_vars = union(model.pos_beta_indices, model.neg_beta_indices)
     solve_status, solve_time = @timed solve(model.gurobi_model)
+    @show solve_status
 
-    if solve_status == :Infeasible
-        warn("Infeasible initial model.")
-        return solve_status, DataFrame()
-    end
+    # if solve_status == :Infeasible
+    #     warn("Infeasible initial model.")
+    #     return solve_status, DataFrame()
+    # end
 
     gurobi_seconds += solve_time
     status = :InProgress
 
-    iterations = []
+    # iterations = []
 
     # Start solver
     while ((status == :InProgress) &&
@@ -147,15 +170,15 @@ function solve_model(model, delta,
             break
         end
 
-        feas = norm(model.X'getvalue(model.residuals), Inf) - delta
-        pct_feas = (norm(model.X'getvalue(model.residuals), Inf) - delta) / delta
-        obj = (norm(getvalue(model.pos_betas), 1) +
-               norm(getvalue(model.neg_betas), 1))
-        iteration_log = DataFrame(seconds = seconds_elapsed,
-                                  feas = feas,
-                                  pct_feas = pct_feas,
-                                  obj = obj)
-        push!(iterations, iteration_log)
+        # feas = norm(model.X'getvalue(model.residuals), Inf) - delta
+        # pct_feas = (norm(model.X'getvalue(model.residuals), Inf) - delta) / delta
+        # obj = (norm(getvalue(model.pos_betas), 1) +
+        #        norm(getvalue(model.neg_betas), 1))
+        # iteration_log = DataFrame(seconds = seconds_elapsed,
+        #                           feas = feas,
+        #                           pct_feas = pct_feas,
+        #                           obj = obj)
+        # push!(iterations, iteration_log)
 
         # Constraint generation
         if constraint_generation
@@ -170,6 +193,9 @@ function solve_model(model, delta,
 
             while length(new_pos_constrs) + length(new_neg_constrs) > 0
                 solve_status, solve_time = @timed solve(model.gurobi_model)
+                # if solve_status == :Infeasible
+                #     break
+                # end
                 gurobi_seconds += solve_time
                 new_pos_constrs, new_neg_constrs =
                     generate_constraints!(model, delta)
@@ -234,8 +260,8 @@ function solve_model(model, delta,
         initial_vars = length(initial_vars),
         correct_initial_vars = correct_initial_vars,
         total_vars = total_vars,
-        status = string(status),
-        iterations = vcat(iterations...))
+        status = string(status))
+        # iterations = vcat(iterations...))
 
     return beta_values, diagnostics
 end
@@ -274,7 +300,8 @@ function add_beta!(model::BasicDantzigModel, idx::Integer, sgn::Number)
 end
 
 
-function add_beta!(model::DantzigModel, idx::Vector, sgn::Vector)
+function add_beta!(model::DantzigModel, idx::Union{UnitRange, Vector},
+                   sgn::Vector)
     for (i, s) in zip(idx, sgn)
         add_beta!(model, i, s)
     end
@@ -306,7 +333,7 @@ function generate_columns!(model::DantzigModel; max_columns=5)
 
     # Add betas
     for (idx, sign) in new_columns
-        add_beta!(model, idx, sign)
+        add_beta!(model, idx, Integer(sign))
     end
 
     return new_columns
@@ -381,7 +408,7 @@ end
 
 
 function add_Xtr_constr!(model::DantzigModel, delta::Number,
-                         idx::Vector, sgn::Vector)
+                         idx::Union{UnitRange, Vector}, sgn::Vector)
     for (i, s) in zip(idx, sgn)
         add_Xtr_constr!(model, delta, i, s)
     end
@@ -390,21 +417,6 @@ end
 
 # Initialization Functions
 # ==============================================================================
-function construct_basic_dantzig_model(X, y)
-    n, p = size(X)
-    gurobi_model = Model()
-
-    residuals = @variable(gurobi_model, [1:n])
-    residual_constrs = @constraint(gurobi_model, y - residuals .== 0)
-    obj = @objective(gurobi_model, Min, 0)
-
-    model = BasicDantzigModel(gurobi_model, [], [], [], [],
-                              residuals, residual_constrs,
-                              [], [], X, nothing)
-    return model
-end
-
-
 function initialize_columns!(model)
     n, p = size(model.X)
     init_cols = 1:p
@@ -418,24 +430,26 @@ function initialize_columns!(model, initial_soln)
         coef = initial_soln[idx]
         # Only need to add one sign, but that doesn't work with an array
         # of deltas. TODO
-        new_var = add_beta!(model, idx, sign(coef))
-        new_var = add_beta!(model, idx, -sign(coef))
+        new_var = add_beta!(model, idx, Integer(sign(coef)))
+        new_var = add_beta!(model, idx, Integer(-sign(coef)))
         setvalue(new_var, coef)
     end
 end
 
 
-function initialize_constraints!(model)
+function initialize_constraints!(model, λ)
+    n, p = size(model.X)
     init_constrs = 1:p
-    add_Xtr_constr!(model, delta, init_constrs, fill(1, p))
-    add_Xtr_constr!(model, delta, init_constrs, fill(-1, p))
+    add_Xtr_constr!(model, λ, init_constrs, fill(1, p))
+    add_Xtr_constr!(model, λ, init_constrs, fill(-1, p))
 end
 
 
-function initialize_constraints!(model, initial_soln)
+function initialize_constraints!(model, λ, initial_soln)
     init_constrs = initial_soln.nzind
-    add_Xtr_constr!(model, delta, init_constrs, fill(1, p))
-    add_Xtr_constr!(model, delta, init_constrs, fill(-1, p))
+    n_nz = length(initial_soln.nzind)
+    add_Xtr_constr!(model, λ, init_constrs, fill(1, n_nz))
+    add_Xtr_constr!(model, λ, init_constrs, fill(-1, n_nz))
 end
 
 #
