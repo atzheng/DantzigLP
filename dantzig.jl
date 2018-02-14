@@ -1,6 +1,6 @@
 using JuMP, Gurobi, MathProgBase, Lasso, DataFrames
 
-TOL = 1e-15
+TOL = 1e-8
 
 """
 Struct to hold constraint refs and mutable variables for column
@@ -67,16 +67,33 @@ end
 
 
 function dantzig_lp(X, y, λ; initializer_fn = lasso_initializer, args...)
-    model = construct_basic_dantzig_model(X, y)
+    model = BasicDantzigModel(X, y)
     initial_soln, initializer_seconds = @timed initializer_fn(X, y, λ)
     soln, log = solve_dantzig_lp!(model, λ, initial_soln; args...)
     return soln, model, log
 end
 
 
+function initialize_basis!(model::BasicDantzigModel, initial_soln)
+    n, p = size(model.X)
+    current_n = n + 2 * length(initial_soln.nzind)
+
+    JuMP.build(model.gurobi_model)
+
+    grb_model = internalmodel(model.gurobi_model).inner
+    vbasis = zeros(current_n)
+    cbasis = - ones(current_n)
+    Gurobi.set_intattrarray!(grb_model, "VBasis", 1, current_n, vbasis)
+    Gurobi.set_intattrarray!(grb_model, "CBasis", 1, current_n, cbasis)
+
+    Gurobi.update_model!(grb_model)
+end
+
+
 function solve_dantzig_lp!(model, λ, initial_soln;
                            column_generation = true, max_columns = 40,
                            constraint_generation = true, max_constraints = 50,
+                           initialize_basis = false,
                            verbose = false, timeout = Inf,
                            solver_params = Dict())
 
@@ -100,6 +117,10 @@ function solve_dantzig_lp!(model, λ, initial_soln;
         initialize_constraints!(model, minimum(λ), initial_soln)
     else
         initialize_constraints!(model, minimum(λ))
+    end
+
+    if initialize_basis && column_generation && constraint_generation
+        initialize_basis!(model, initial_soln)
     end
 
     solver(modelx, λx) = solve_model(modelx, λx,
@@ -362,9 +383,11 @@ xtA(x::Vector, A::Matrix) = x'A
 # ------------------------------------------------------------------------------
 function generate_constraints!(model::DantzigModel, delta;
                                max_constraints = 50)
+    # TODO should track the constraint indices so the tolerance won't matter
+
     X = model.X
     n, p = size(X)
-    TOL = 1e-15
+    TOL = 1e-6
     constraint_values = get_constraint_violations(model)
     constraint_indices = sortperm(abs.(constraint_values), rev = true)
 
