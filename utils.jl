@@ -17,7 +17,7 @@ TODO Add D matrix somehow
 """
 function regression_example(n::Integer, p::Integer, density;
                             SNR=10, binary=false, rho=0.0,
-                            sparsity=0.0)
+                            sparsity=0.0, standardize=false)
     if binary
         X = sparse(round.(rand(n, p) * 0.6)) |> normalize_columns
     else
@@ -25,13 +25,33 @@ function regression_example(n::Integer, p::Integer, density;
         X = randn(n, p) |>
             A -> correlate(A, rho) |>
             A -> sparsify(A, sparsity) |>
-            normalize_columns
+            normalize_columns |>
+            A -> applyif(standardize, standardize_columns, A)
     end
 
     true_coeffs = round.(Int, rand(p) .<= density) .* rand(p) .* 10
-    y = X * true_coeffs + randn(n) * var(X * true_coeffs) / SNR
+    y = X * true_coeffs + randn(n) * var(X * true_coeffs) / SNR |>
+        xx -> applyif(standardize, standardize_column, xx)
 
     return X, y, true_coeffs
+end
+
+
+function standardize_columns(X)
+    return hcat([standardize_column(X[:, j]) for j in 1:size(X, 2)]...)
+end
+
+function standardize_column(Xⱼ)
+    return (Xⱼ - mean(Xⱼ)) / sqrt(var(Xⱼ))
+end
+
+
+function applyif(cond, fn, arg, args...)
+    if cond
+        return fn(arg, args...)
+    else
+        return arg
+    end
 end
 
 
