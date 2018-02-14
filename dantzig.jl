@@ -1,6 +1,6 @@
 using JuMP, Gurobi, MathProgBase, Lasso, DataFrames
 
-TOL = 1e-8
+TOL = 1e-15
 
 """
 Struct to hold constraint refs and mutable variables for column
@@ -337,7 +337,7 @@ function generate_constraints!(model::DantzigModel, delta;
                                max_constraints = 50)
     X = model.X
     n, p = size(X)
-    TOL = 1e-6
+    TOL = 1e-15
     constraint_values = get_constraint_violations(model)
     constraint_indices = sortperm(abs.(constraint_values), rev = true)
 
@@ -448,7 +448,7 @@ end
 function lasso_initializer(X, y, delta::Array; args...)
     n, p = size(X)
     soln = fit(LassoPath, X, y, λ = delta ./ n;
-               maxncoef = p, standardize = false, cd_tol = 1e-9, args...,
+               maxncoef = p, standardize = false, cd_tol = 1e-15, args...,
                ).coefs
     return merge_vectors([soln[:, j] for j in 1:size(soln, 2)]...)
 end
