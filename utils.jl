@@ -131,3 +131,20 @@ function shift(x::AbstractVector, k::Integer)
     y[1:min(end, k)] = 0
     return y
 end
+
+function verbose_info(verbose, msg)
+    if verbose info(msg) end
+end
+
+function construct_solver(; verbose = false, tol = 1e-6, timeout = Inf,
+                          params = Dict(), args...)
+
+    default_params = Dict([(:OutputFlag, ifelse(verbose, 1, 0)),
+                           (:TimeLimit, timeout),
+                           (:FeasibilityTol, tol),
+                           (:OptimalityTol, tol)])
+
+    params_w_defaults = merge(default_params, params)
+    solver = GurobiSolver(; params_w_defaults...)
+    return solver
+end
