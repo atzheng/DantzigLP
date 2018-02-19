@@ -11,6 +11,7 @@ Base.show(io::IO, x::DantzigModel) = show(io, x.gurobi_model)
 
 type BasicDantzigModel <: DantzigModel
     gurobi_model     # Gurobi model object (mutable)
+    size             # (n, p) tuple
     pos_betas        # Postive Beta variables already in the model (mutable)
     pos_beta_indices # Indices corresponding to entries of pos_betas (mutable)
     neg_betas        # Negative Beta variables already in the model (mutable)
@@ -20,8 +21,6 @@ type BasicDantzigModel <: DantzigModel
     linf_pos_constrs # Constraints X'r <= delta
     linf_neg_constrs # Constraints X'r >= -delta
     X                # Data matrix X
-    # Diagnostics
-    diagnostics      # DataFrame of diagnostics
 end
 
 function BasicDantzigModel(X, y)
@@ -32,9 +31,8 @@ function BasicDantzigModel(X, y)
     residual_constrs = @constraint(gurobi_model, y - residuals .== 0)
     obj = @objective(gurobi_model, Min, 0)
 
-    model = BasicDantzigModel(gurobi_model, [], [], [], [],
-                              residuals, residual_constrs,
-                              [], [], X, nothing)
+    model = BasicDantzigModel(gurobi_model, (n, p), [], [], [], [],
+                              residuals, residual_constrs, [], [], X)
     return model
 end
 
@@ -75,7 +73,7 @@ end
 
 
 function initialize_basis!(model::BasicDantzigModel, initial_soln)
-    n, p = size(model.X)
+    n, p = model.size
     current_n = n + 2 * length(initial_soln.nzind)
 
     JuMP.build(model.gurobi_model)
@@ -95,16 +93,17 @@ function solve_dantzig_lp!(model, λ, initial_soln;
                            constraint_generation = true, max_constraints = 50,
                            initialize_basis = false,
                            verbose = false, timeout = Inf,
-                           solver_params = Dict())
+                           solver_params = Dict(),
+                           tol = 1e-9)
 
+    vinfo(msg) = verbose_info(verbose, msg)
+
+    vinfo("Initializing columns and constraints...")
     start_time = time_ns()
     # Initialize
     # --------------------------------------------------------------------------
-    default_solver_params = Dict([(:Method, 1),
-                                  (:OutputFlag, ifelse(verbose, 1, 0)),
-                                  (:TimeLimit, timeout)])
-    solver_params_w_defaults = merge(default_solver_params, solver_params)
-    solver = GurobiSolver(; solver_params_w_defaults...)
+    solver = construct_solver(verbose = verbose, tol = tol, timeout = timeout,
+                              params = solver_params)
     setsolver(model.gurobi_model, solver)
 
     if column_generation
@@ -126,12 +125,9 @@ function solve_dantzig_lp!(model, λ, initial_soln;
     solver(modelx, λx) = solve_model(modelx, λx,
                                      column_generation, max_columns,
                                      constraint_generation, max_constraints,
-                                     verbose, timeout)
+                                     verbose, timeout, tol)
 
-    if verbose
-        info(@sprintf("Model construction finished in %.2f seconds.",
-                      (time_ns() - start_time) / 1e9))
-    end
+    vinfo(@sprintf("Column and constraint initialization finished in %.2f seconds.", (time_ns() - start_time) / 1e9))
 
     # Solve
     # --------------------------------------------------------------------------
@@ -159,7 +155,7 @@ end
 function solve_model(model, delta,
                      column_generation, max_columns,
                      constraint_generation, max_constraints,
-                     verbose, timeout)
+                     verbose, timeout, tol)
     # Intialize tracking for diagnostics
     start_time = time_ns()
     columns_generated = 0
@@ -171,10 +167,9 @@ function solve_model(model, delta,
     solve_status, solve_time = @timed solve(model.gurobi_model)
     @show solve_status
 
-    # if solve_status == :Infeasible
-    #     warn("Infeasible initial model.")
-    #     return solve_status, DataFrame()
-    # end
+    if solve_status == :Infeasible
+        error("Infeasible initial model.")
+    end
 
     gurobi_seconds += solve_time
     status = :InProgress
@@ -208,18 +203,19 @@ function solve_model(model, delta,
             neg_constrs = []
 
             new_pos_constrs, new_neg_constrs =
-                generate_constraints!(model, delta)
+                generate_constraints!(model, delta, max_constraints, tol)
             push!(pos_constrs, new_pos_constrs)
             push!(neg_constrs, new_neg_constrs)
 
             while length(new_pos_constrs) + length(new_neg_constrs) > 0
                 solve_status, solve_time = @timed solve(model.gurobi_model)
-                # if solve_status == :Infeasible
-                #     break
-                # end
+                @show solve_status
+                if solve_status == :Infeasible
+                    break
+                end
                 gurobi_seconds += solve_time
                 new_pos_constrs, new_neg_constrs =
-                    generate_constraints!(model, delta)
+                    generate_constraints!(model, delta, max_constraints, tol)
                 push!(pos_constrs, new_pos_constrs)
                 push!(neg_constrs, new_neg_constrs)
             end
@@ -239,13 +235,14 @@ function solve_model(model, delta,
         # Column generation
         if column_generation
             colgen_start_ts = time_ns()
-            new_columns = generate_columns!(model)
+            new_columns = generate_columns!(model, max_columns, tol)
             if verbose info(@sprintf("Generated %d columns.",
                                     length(new_columns))) end
             if length(new_columns) == 0
                 status = :Optimal
             else
                 solve_status, solve_time = @timed solve(model.gurobi_model)
+                @show solve_status
                 gurobi_seconds += solve_time
                 columns_generated += length(new_columns)
             end
@@ -256,7 +253,7 @@ function solve_model(model, delta,
     end
 
     # Extract solution
-    beta_values = spzeros(size(model.X)[2])
+    beta_values = spzeros(model.size[2])
     for (var, i) in zip(model.pos_betas, model.pos_beta_indices)
         beta_values[i] = getvalue(var)
     end
@@ -329,7 +326,7 @@ function add_beta!(model::DantzigModel, idx::Union{UnitRange, Vector},
 end
 
 
-function generate_columns!(model::DantzigModel; max_columns=5)
+function generate_columns!(model::DantzigModel, max_columns, tol)
     # Compute reduced costs
     pos_costs, neg_costs = get_reduced_costs(model)
     pos_costs[model.pos_beta_indices] = Inf
@@ -350,7 +347,7 @@ function generate_columns!(model::DantzigModel; max_columns=5)
     neg_min_costs = zip_collect(neg_costs[neg_min_indices], neg_return_vals)
 
     all_costs = vcat(pos_min_costs, neg_min_costs)
-    new_columns = [x[2] for x in all_costs if x[1] < -TOL]
+    new_columns = [x[2] for x in all_costs if x[1] < -tol]
 
     # Add betas
     for (idx, sign) in new_columns
@@ -363,7 +360,7 @@ end
 zip_collect(args...) = collect(zip(map(vec, args)...))
 
 function get_reduced_costs(model::BasicDantzigModel)
-    n, p = size(model.X)
+    n, p = model.size
 
     # Compute reduced costs separately for the positive and negative
     # components of Beta
@@ -381,13 +378,11 @@ xtA(x::Vector, A::Matrix) = x'A
 
 # Constraint Generation
 # ------------------------------------------------------------------------------
-function generate_constraints!(model::DantzigModel, delta;
-                               max_constraints = 50)
+function generate_constraints!(model::DantzigModel, delta,
+                               max_constraints, tol)
     # TODO should track the constraint indices so the tolerance won't matter
+    n, p = model.size
 
-    X = model.X
-    n, p = size(X)
-    TOL = 1e-6
     constraint_values = get_constraint_violations(model)
     constraint_indices = sortperm(abs.(constraint_values), rev = true)
 
@@ -395,10 +390,10 @@ function generate_constraints!(model::DantzigModel, delta;
     new_neg_constrs = []
     for row in constraint_indices[1:min(max_constraints, p)]
         val = constraint_values[row]
-        if val < -delta - TOL
+        if val < -delta - tol
             new_constr = add_Xtr_constr!(model, delta, row, -1)
             push!(new_neg_constrs, new_constr)
-        elseif val > delta + TOL
+        elseif val > delta + tol
             new_constr = add_Xtr_constr!(model, delta, row, 1)
             push!(new_pos_constrs, new_constr)
         end
@@ -441,7 +436,7 @@ end
 # Initialization Functions
 # ==============================================================================
 function initialize_columns!(model)
-    n, p = size(model.X)
+    n, p = model.size
     init_cols = 1:p
     add_beta!(model, init_cols, fill(1, p))
     add_beta!(model, init_cols, fill(-1, p))
@@ -461,7 +456,7 @@ end
 
 
 function initialize_constraints!(model, λ)
-    n, p = size(model.X)
+    n, p = model.size
     init_constrs = 1:p
     add_Xtr_constr!(model, λ, init_constrs, fill(1, p))
     add_Xtr_constr!(model, λ, init_constrs, fill(-1, p))
