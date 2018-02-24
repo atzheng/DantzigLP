@@ -1,4 +1,4 @@
-using DataFrames, StatsBase
+using DataFrames, StatsBase, Gurobi
 
 
 """
@@ -55,16 +55,48 @@ function applyif(cond, fn, arg, args...)
 end
 
 
-function trend_filtering_example(n::Integer, k::Integer, knots::Integer; SNR=10)
+function tf_example(n, k, knots; SNR=10, increasing=true)
+    # α_idx = vcat(sort(sample(1:(n - 1), knots, replace=false)), [n])
+    α_idx = sample(1:n, knots, replace=false)
+    α = spzeros(n)
+    raw_α = randn(knots) * 10
+    α_values = raw_α
+    # α_values = max(raw_α, -shift(raw_α, 1))
+    α[α_idx] = α_values
+    β = reduce((x, i) -> tibs_M(n, i) * x, α, k:-1:0)
+
+    var_noise = var(β) / SNR
+    noise = randn(n) * sqrt(var_noise)
+    return (β + noise), β, α
+end
+
+
+function tibs_M(n::Number, k::Number)
+    return tibs_M(Int(n), Int(k))
+end
+
+function tibs_M(n::Integer, k::Integer)
+    first_k = hcat(speye(k, k), spzeros(k, n - k))
+    rest = hcat(spzeros(n - k, k), LowerTriangular(ones(n-k, n-k)))
+    return vcat(first_k, rest)
+end
+
+
+function trend_filtering_example(n::Integer, k::Integer, knots::Integer;
+                                 SNR=10, continuous=false)
     knot_idx = vcat(sort(sample(1:(n - 1), knots, replace=false)), [n])
     diffs = knot_idx .- shift(knot_idx, 1)
     piecewise_fns = [random_polynomial(diff, k) for diff in diffs]
-    signal = vcat(piecewise_fns...)
+
+    if continuous
+        signal = reduce((x, y) -> vcat(x, x[end] .+ y .- y[1]), piecewise_fns)
+    else
+        signal = vcat(piecewise_fns...)
+    end
+
     var_noise = var(signal) / SNR
-    @show var(signal)
     noise = randn(n) * sqrt(var_noise)
-    @show var(noise)
-    return (signal + noise), signal
+    return (signal + noise), signal, knot_idx
 end
 
 
@@ -125,7 +157,6 @@ function struct2df(xs)
 end
 
 
-# TODO this is really slow...
 function shift(x::AbstractVector, k::Integer)
     y = circshift(x, k)
     y[1:min(end, k)] = 0
@@ -135,6 +166,7 @@ end
 function verbose_info(verbose, msg)
     if verbose info(msg) end
 end
+
 
 function construct_solver(; verbose = false, tol = 1e-6, timeout = Inf,
                           params = Dict(), args...)
@@ -148,3 +180,33 @@ function construct_solver(; verbose = false, tol = 1e-6, timeout = Inf,
     solver = GurobiSolver(; params_w_defaults...)
     return solver
 end
+
+
+function projection_distance(x, y)
+    return sum([minimum(abs.(yx .- x)) for yx in y])
+end
+
+
+"""
+Merge the nonzero values of all vectors, with smaller indices of xs
+taking precedence.
+"""
+function merge_vectors(xs...)
+    if length(unique(map(length, xs))) > 1
+        error("All vectors must have equal length.")
+    end
+
+    results = spzeros(length(xs[1]))
+    nzinds = []
+    for x in xs
+        spx = sparse(x)
+        new_nzind = setdiff(spx.nzind, nzinds)
+        results[new_nzind] = spx[new_nzind]
+        push!(nzinds, new_nzind)
+    end
+
+    return results
+end
+
+
+zip_collect(args...) = collect(zip(map(vec, args)...))
