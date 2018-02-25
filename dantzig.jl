@@ -119,18 +119,15 @@ function get_reduced_costs(model::BasicDantzigModel)
     # First n constraints correspond to the β constraints.
     # TODO Shouldn't need to make this assumption....
     duals = model.gurobi_model.linconstrDuals[1:n]
-    pos_reduced_costs = 1 + xtA(duals, model.X)
-    neg_reduced_costs = 1 - xtA(duals, model.X)
+    pos_reduced_costs = 1 + duals'model.X
+    neg_reduced_costs = 1 - duals'model.X
     return (pos_reduced_costs, neg_reduced_costs)
 end
 
 
-xtA(x::Vector, A::Matrix) = x'A
-
-
 function get_constraint_violations(model::BasicDantzigModel)
     resid_vals = getvalue(model.residuals)
-    return vec(xtA(resid_vals, X))
+    return vec(resid_vals'X)
 end
 
 
