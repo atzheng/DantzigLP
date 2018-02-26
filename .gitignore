@@ -1,0 +1,6 @@
+*.csv
+*.svg
+*.R
+*.png
+.Rhistory
+.juliahistory

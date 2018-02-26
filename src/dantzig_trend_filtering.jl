@@ -180,7 +180,7 @@ function full_dantzig_tf(y, λ, k;
     end
 
     @constraints model begin
-        M⁻¹(n, k) * αⁱ[:, k] .== α⁺ - α⁻
+        α_constrs, M⁻¹(n, k) * αⁱ[:, k] .== α⁺ - α⁻
         M⁻¹(n, 0)'∇ⁱ[:, 0] .== y .- αⁱ[:, 0]
 
         ∇ⁱ[1:k + 1, k] .== 0
@@ -213,12 +213,16 @@ function full_dantzig_tf(y, λ, k;
         return solve_status, model, diagnostics
     end
 
+    dtf_model = DantzigTFModel(model, (n, n),
+                               α⁺, collect(1:n), α⁻, collect(1:n),
+                               [], [], α_constrs, αⁱ[:, 0], ∇ⁱ[:, k], k, λ)
+
     if return_α
         α_values = sparse(getvalue(α⁺) - getvalue(α⁻))
-        return α_values, model, diagnostics
+        return α_values, dtf_model, diagnostics
     else
         β = getvalue(αⁱ[:, 0])
-        return β, model, diagnostics
+        return β, dtf_model, diagnostics
     end
 end
 
@@ -226,4 +230,21 @@ end
 function M⁻¹(n, k)
     return [speye(k + 1)        zeros(k + 1, n - k - 1)
             zeros(n - k - 1, k) difference_operator(n - k, 1)]
+end
+
+
+function difference_operator(n :: Integer, k :: Integer)
+    if k == 0
+        return speye(n, n)
+    elseif k == 1
+        operator = spzeros(n - 1, n)
+        for i in 1:(n - 1)
+            operator[i, i] = -1
+            operator[i, i + 1] = 1
+        end
+        return operator
+    else
+        return difference_operator(n - k + 1, 1) *
+            difference_operator(n, k - 1)
+    end
 end

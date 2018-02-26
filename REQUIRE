@@ -1,0 +1,10 @@
+julia 0.6
+Gurobi
+JuMP
+MathProgBase
+ProgressMeter
+Lasso
+DataFrames
+StatsBase
+VectorizedRoutines
+MicroLogging

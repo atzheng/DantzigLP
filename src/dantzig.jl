@@ -1,6 +1,5 @@
-using JuMP, Gurobi, MathProgBase, Lasso, DataFrames
+using JuMP, Gurobi, MathProgBase, Lasso
 
-TOL = 1e-8
 
 type BasicDantzigModel <: DantzigModel
     gurobi_model     # Gurobi model object (mutable)
@@ -15,6 +14,7 @@ type BasicDantzigModel <: DantzigModel
     linf_neg_constrs # Constraints X'r >= -delta
     X                # Data matrix X
 end
+
 
 function BasicDantzigModel(X, y)
     n, p = size(X)

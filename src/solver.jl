@@ -1,18 +1,17 @@
-"""
-The main engine for fast Dantzig estimation. Handles column and constraint
-generation, solving for λ paths, and diagnostics.
+# The main engine for fast Dantzig estimation. Handles column and constraint
+# generation, solving for λ paths, and diagnostics.
 
-For each type of Dantzig problem, we need specialized methods for the following
-functions (dispatched on types inheriting from DantzigModel):
+# For each type of Dantzig problem, we need specialized methods for the
+# following functions (dispatched on types inheriting from DantzigModel):
 
-Constraint generation:
-- add_Xtr_constraint!
-- get_constraint_violations
+# Constraint generation:
+# - add_Xtr_constraint!
+# - get_constraint_violations
 
-Column generation:
-- add_beta!
-- get_reduced_costs
-"""
+# Column generation:
+# - add_beta!
+# - get_reduced_costs
+using JuMP, Gurobi, MathProgBase, DataFrames
 
 
 """
@@ -91,7 +90,7 @@ function solve_model(model, delta,
                      column_generation, max_columns,
                      constraint_generation, max_constraints,
                      verbose, timeout, tol)
-    # Intialize tracking for diagnostics
+    # Initialize tracking for diagnostics
     start_time = time_ns()
     columns_generated = 0
     column_generation_seconds = 0
@@ -100,20 +99,19 @@ function solve_model(model, delta,
     gurobi_seconds = 0
     initial_vars = union(model.pos_beta_indices, model.neg_beta_indices)
     solve_status, solve_time = @timed solve(model.gurobi_model)
-    @show solve_status
 
     if solve_status == :Infeasible
         error("Infeasible initial model.")
     end
 
     gurobi_seconds += solve_time
-    status = :InProgress
+    status = ifelse(column_generation || constraint_generation,
+                    :InProgress, :Optimal)
 
     # iterations = []
 
     # Start solver
-    while ((status == :InProgress) &&
-           (column_generation || constraint_generation))
+    while status == :InProgress
 
         seconds_elapsed = (time_ns() - start_time) / 1.0e9
         if seconds_elapsed > timeout
