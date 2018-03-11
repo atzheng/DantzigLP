@@ -1,4 +1,5 @@
 using ProgressMeter
+using Parameters
 
 
 type GroupDantzigModel <: DantzigModel
@@ -23,9 +24,13 @@ end
 
 
 function GroupDantzigModel(X, y, g, λ; args...)
-    # TODO Should translate g into 1:k
     n, p = size(X)
     k = length(unique(g))
+
+    # Translate g into 1:k
+    g_map = Dict(zip(unique(g), 1:k))
+    groups = [g_map[gx] for gx in g]
+
     model = Model()
 
     @variables model begin
@@ -39,28 +44,30 @@ function GroupDantzigModel(X, y, g, λ; args...)
     # get_reduced_costs works.
     @constraints model begin
         residual_constrs, r .== y
-        βg_constrs[j=1:p], βg[g[j]] ≥ 0
+        βg_constrs[j=1:p], βg[groups[j]] ≥ 0
     end
 
     for i in 1:k
-        group_jx = find(g .== i)
+        group_jx = find(groups .== i)
         @constraint(model, sum(∇⁺[group_jx] .+ ∇⁻[group_jx]) ≤ λ)
     end
 
     obj = @objective(model, Min, sum(βg))
 
     return GroupDantzigModel(model, (n, p), [], [], [], [], r, ∇⁺, ∇⁻,
-                             residual_constrs, βg_constrs, [], g, X)
+                             residual_constrs, βg_constrs, [], groups, X)
 end
 
 
 function group_dantzig(X, y, g, λ; lasso_tol=1e-5, args...)
+    k = length(unique(g))
     args_dict = Dict(args)
     # Typically small number |G| of constraints; no congen for now.
     verbose = get(args_dict, :verbose, false)
     # args_dict[:constraint_generation] = false
     # # Column generation policy will be to add one group at a time.
     # args_dict[:max_columns] = 1
+    args_dict[:max_constraints] = k
     vinfo(msg) = verbose_info(verbose, msg)
 
     vinfo("Constructing initial model...")
@@ -71,8 +78,8 @@ function group_dantzig(X, y, g, λ; lasso_tol=1e-5, args...)
     vinfo("Starting initializer...")
     initializer_secs = @elapsed initial_soln =
         group_lasso(X, y, g, λ; tol=lasso_tol, verbose=verbose)
-    vinfo(@sprintf("Initialization finished in %.2f seconds.",
-                   initializer_secs))
+    vinfo(@sprintf("Initialization finished in %.2f seconds. L₀(β₀) = %d.",
+                   initializer_secs, norm(initial_soln, 0)))
 
     β, diagnostics = solve_dantzig_lp!(model, λ, initial_soln; args_dict...)
     return β, model, diagnostics
@@ -113,7 +120,8 @@ function add_Xtr_constr!(model::GroupDantzigModel, λ::Number,
         # @debug @sprintf("Added %d constraints for group %d.",
                         # length(new_constrs), idx)
         push!(model.∇_constr_indices, idx)
-        return new_constrs
+        # return new_constrs
+        return idx
     end
 end
 
