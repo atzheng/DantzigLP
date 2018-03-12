@@ -87,7 +87,8 @@ end
 Closure to add new beta variables to the model.
 WARNING: mutates betas and beta_indices.
 """
-function add_beta!(model::BasicDantzigModel, idx::Integer, sgn::Number)
+function add_beta!(model::Union{BasicDantzigModel, BasisPursuitModel},
+                   idx::Integer, sgn::Number)
     if sgn > 0
         beta_indices = model.pos_beta_indices
         betas = model.pos_betas
@@ -111,7 +112,7 @@ function add_beta!(model::BasicDantzigModel, idx::Integer, sgn::Number)
     end
 end
 
-function get_reduced_costs(model::BasicDantzigModel)
+function get_reduced_costs(model::Union{BasicDantzigModel, BasisPursuitModel})
     n, p = model.size
 
     # Compute reduced costs separately for the positive and negative
