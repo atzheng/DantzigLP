@@ -94,9 +94,15 @@ function trend_filtering_example(n::Integer, k::Integer, knots::Integer;
         signal = vcat(piecewise_fns...)
     end
 
+    noisy = add_gaussian_noise(signal, SNR)
+    return noisy, signal, knot_idx
+end
+
+
+function add_gaussian_noise(signal, SNR)
     var_noise = var(signal) / SNR
-    noise = randn(n) * sqrt(var_noise)
-    return (signal + noise), signal, knot_idx
+    noise = randn(length(signal)) * sqrt(var_noise)
+    return signal + noise
 end
 
 
@@ -210,35 +216,3 @@ end
 
 
 zip_collect(args...) = collect(zip(map(vec, args)...))
-
-function edit_distance(x, y; del_cost=100, add_cost=100)
-    nx = length(x)
-    ny = length(y)
-
-    # min_val = minimum(vcat(x, y))
-    # max_val = maximum(vcat(x, y))
-    # ifelse(del_cost == nothing, del_cost = )
-
-    model = Model(solver = GurobiSolver(OutputFlag = 0))
-    @variables model begin
-        shift[1:nx, 1:ny], Bin
-        del[1:nx], Bin
-        add[1:ny], Bin
-    end
-
-    shift_costs = hcat([[abs(x - y) for y in y] for x in x] ...)'
-    obj = @objective(model, Min,
-                     sum(shift .* shift_costs)
-                     + sum(del .* del_cost) + sum(add .* add_cost))
-
-    @constraints model begin
-        [i=1:nx], sum(shift[i, :]) + del[i] == 1
-        [j=1:ny], sum(shift[:, j]) + add[j] == 1
-    end
-
-    solve(model)
-
-    info(@sprintf("%d shifts, %d deletions, and %d additions",
-                  sum(getvalue(shift)), sum(getvalue(del)), sum(getvalue(add))))
-    return model.objVal
-end
