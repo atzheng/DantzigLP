@@ -11,7 +11,7 @@
 # Column generation:
 # - add_beta!
 # - get_reduced_costs
-using JuMP, Gurobi, MathProgBase, DataFrames
+using Base, JuMP, Gurobi, MathProgBase, DataFrames
 
 
 """
@@ -20,6 +20,12 @@ and constraint generation. Extend for specialized Dantzig problems.
 """
 abstract type DantzigModel end
 Base.show(io::IO, x::DantzigModel) = show(io, x.gurobi_model)
+
+
+type InfeasibilityError <: Exception end
+Base.showerror(io::IO, e::InfeasibilityError) =
+    print(io, e.var, "Infeasible model.")
+
 
 
 function solve_dantzig_lp!(model, λ, initial_soln;
@@ -101,7 +107,7 @@ function solve_model(model, delta,
     solve_status, solve_time = @timed solve(model.gurobi_model)
 
     if solve_status == :Infeasible
-        error("Infeasible initial model.")
+        throw(InfeasibilityError())
     end
 
     gurobi_seconds += solve_time
@@ -112,6 +118,27 @@ function solve_model(model, delta,
 
     # Start solver
     while status == :InProgress
+        # ----------------------------------------------------------------------
+        # JUNK
+        # n, p = model.size
+        # β = spzeros(p)
+        # β[model.pos_beta_indices] = getvalue(model.pos_betas)
+        # β[model.neg_beta_indices] -= getvalue(model.neg_betas)
+        # info(@sprintf("β hash: %s", repr(hash(round(β * 1000)))))
+        # info(@sprintf("β support hash: %s", repr(hash(β.nzind))))
+
+        # cbasis, rbasis = MathProgBase.getbasis(
+        #     internalmodel(model.gurobi_model))
+        # info(@sprintf("CBasis support hash: %s",
+        #               repr(hash(find(cbasis .== :Basic)))))
+        # info(@sprintf("RBasis support hash: %s",
+        #               repr(hash(find(rbasis .== :Basic)))))
+
+        # b = vcat(y, fill(0, p), fill(delta, k))
+        # duals = model.gurobi_model.linconstrDuals
+        # info(model.gurobi_model.objVal - duals'b)
+        # ----------------------------------------------------------------------
+
 
         seconds_elapsed = (time_ns() - start_time) / 1.0e9
         if seconds_elapsed > timeout
