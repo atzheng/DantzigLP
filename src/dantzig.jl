@@ -35,10 +35,13 @@ Baseline solution. Mainly for testing.
 Under normal conditions, should be identical to dantzig_lp with
 column / constraint generation disabled.
 """
-function baseline_dantzig(X, y, λ, verbose = false)
+function baseline_dantzig(X, y, λ; args...)
     n, p = size(X)
 
-    model = Model(solver = GurobiSolver(OutputFlag = ifelse(verbose, 1, 0)))
+    args_dict = Dict(args)
+    verbose = get(args_dict, :verbose, false)
+    solver = construct_solver(; args...)
+    model = Model(solver=solver)
 
     residuals = @variable(model, [1:n])
     abs_beta_pos = @variable(model, [1:p], lowerbound = 0)
@@ -128,7 +131,7 @@ end
 
 function get_constraint_violations(model::BasicDantzigModel)
     resid_vals = getvalue(model.residuals)
-    return vec(resid_vals'X)
+    return vec(resid_vals'model.X)
 end
 
 
