@@ -40,7 +40,26 @@ function fused_regression_example(n, p, knots; SNR=10)
 end
 
 
-function baseline_dantzig_fused_regression(X, y, λ)
+function fused_regression_initializer(X, y, λ; args...)
+    n, p = size(X)
+    β = fused_regression(X, y, λ; args...)
+    α_B = difference_operator(p, 1) * β
+    return α_B
+end
+
+
+function dantzig_fused_regression(X, y, λ; args...)
+    projected_X, projected_y = project_data(X, y)
+    model = BasicDantzigModel(projected_X, projected_y)
+    initial_soln, initializer_seconds =
+        @timed fused_regression_initializer(X, y, λ)
+    α_B, diagnostics = solve_dantzig_lp!(model, λ, initial_soln; args...)
+    α, β = recover_coefs(X, y, α_B)
+    return β, model, diagnostics, α
+end
+
+
+function project_data(X, y)
     n, p = size(X)
     fused_X = X * LowerTriangular(ones(p, p))
     z = fused_X[:, 1]
@@ -50,11 +69,26 @@ function baseline_dantzig_fused_regression(X, y, λ)
 
     projected_y = fused_projection(y)
     projected_X = fused_projection(fused_X[:, 2:end])
-    model, α_B = baseline_dantzig(projected_X, projected_y, λ)
+    return projected_X, projected_y
+end
+
+
+function recover_coefs(X, y, α_B)
+    n, p = size(X)
+    fused_X = X * LowerTriangular(ones(p, p))
+    z = fused_X[:, 1]
 
     residuals = y - fused_X[:, 2:end] * α_B
     α_a = (z'residuals) / z'z
     α = vcat(α_a, α_B)
     β = LowerTriangular(ones(p, p)) * full(α)
-    return model, β, sparse(α)
+    return sparse(α), β
+end
+
+
+function baseline_dantzig_fused_regression(X, y, λ; args...)
+    projected_X, projected_y = project_data(X, y)
+    model, α_B = baseline_dantzig(projected_X, projected_y, λ; args...)
+    α, β = recover_coefs(X, y, α_B)
+    return β, model, α
 end
