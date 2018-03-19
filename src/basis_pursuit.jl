@@ -25,6 +25,32 @@ end
 
 
 function initialize_constraints!(model::BasisPursuitModel, λ)
+    # Do nothing
+end
+
+
+function basis_pursuit_initializer(X, y; λ_init=1, λ_n=30, λ_min=1e-7, args...)
+    λ_max = norm(X'y, Inf)
+    λ = λ_init
+    is_solved = false
+    βlasso = nothing
+
+    while λ ≥ λ_min && !is_solved
+        λs = log_range(λ_max, λ, λ_n)
+        βlasso = basis_pursuit_initializer(X, y, λs; args...)
+        Xb = X[:, βlasso.nzind]
+        β = Xb \ y
+        if Xb * β ≈ y
+            is_solved = true
+        end
+        λ = λ / 2
+    end
+
+    if !is_solved
+        error("λ_min reached; no feasible solution found.")
+    end
+
+    return βlasso
 end
 
 
@@ -43,9 +69,7 @@ function log_range(minx, maxx, n)
 end
 
 
-function basis_pursuit(X, y;
-                       λ_init=1, λ_min=1e-6, nλ=50,
-                       initializer_args=[], args...)
+function basis_pursuit(X, y; initializer_args=[], args...)
 
     args_dict = Dict(args)
     verbose = get(args_dict, :verbose, false)
@@ -57,42 +81,19 @@ function basis_pursuit(X, y;
     vinfo(@sprintf("Initial model completed in %.2f seconds.",
                    construction_secs))
 
-    λ_max = norm(X'y, Inf)
-    λ = λ_init
-    is_solved = false
+    initializer_secs = @elapsed initial_soln =
+        basis_pursuit_initializer(X, y; initializer_args...)
 
-    β = nothing
-    model_cp = nothing
-    diagnostics = nothing
+    vinfo(@sprintf(
+        "Initialization finished in %.2f seconds. L₀(β₀) = %d.",
+        initializer_secs, norm(initial_soln, 0)))
 
-    while λ ≥ λ_min && !is_solved
-        try
-            initializer_secs = @elapsed initial_soln =
-                basis_pursuit_initializer(
-                    X, y, log_range(λ_max, λ, nλ);
-                    initializer_args...)
-            vinfo(@sprintf(
-                "Initialization finished in %.2f seconds. L₀(β₀) = %d.",
-                initializer_secs, norm(initial_soln, 0)))
-            model_cp = deepcopy(model)
-            β, diagnostics =
-                solve_dantzig_lp!(model_cp, 0, initial_soln; args...)
-            is_solved = true
-        catch e
-            if isa(e, InfeasibilityError)
-                λ = λ / 2
-                vinfo(@sprintf("Infeasible model; reducing λ to %.6f", λ))
-            else
-                throw(e)
-            end
-        end
-    end
+    β, diagnostics = solve_dantzig_lp!(model, 0, initial_soln; args...)
 
-    if !is_solved
-        error("No feasible λ found.")
-    end
+    diagnostics[:construction_secs] = construction_secs
+    diagnostics[:initializer_secs] = initializer_secs
 
-    return β, model_cp, diagnostics
+    return β, model, diagnostics
 end
 
 
