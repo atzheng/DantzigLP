@@ -20,7 +20,7 @@ srand(798)
 results = []
 
 params = product(ns, ps, rhos_ss, is) |> collect |> shuffle;
-results = @parallel vcat for param in params[1:4]
+results = @parallel vcat for param in params
     @show param
     instance_id = hash(param)
     (n, p, (rho, s), i) = param
