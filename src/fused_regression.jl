@@ -55,6 +55,7 @@ function dantzig_fused_regression(X, y, λ; args...)
         @timed fused_regression_initializer(X, y, λ)
     α_B, diagnostics = solve_dantzig_lp!(model, λ, initial_soln; args...)
     α, β = recover_coefs(X, y, α_B)
+    diagnostics[:initializer_seconds] = initializer_seconds
     return β, model, diagnostics, α
 end
 

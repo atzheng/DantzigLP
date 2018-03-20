@@ -5,7 +5,7 @@
 
     if compare
         bl_time = @elapsed model, βdantzig = DantzigLP.baseline_basis_pursuit(
-            X, y; timeout=180)
+            X, y; timeout=300)
     else
         bl_time = nothing
     end
@@ -26,11 +26,11 @@ params = product(ns, ps, instances) |> collect |> shuffle
 
 srand(798)
 results = @parallel vcat for param in params
+    gc()
     @show param
     instance_id = hash(param)
     n, p, i = param
-    # compare = n * p <= 500 * 10000
-    compare = true
+    compare = n * p <= 1000 * 10000
 
     diagnostics = run_instance(n, p, compare)
     diagnostics[:instance_id] = instance_id
