@@ -1,3 +1,5 @@
+__precompile__()
+
 module DantzigLP
 
 export baseline_dantzig, dantzig_lp, regression_example,
