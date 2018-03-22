@@ -1,0 +1,26 @@
+import itertools as it
+
+
+def generate_config_str(**kwargs):
+    return '_'.join(["%s=%s" % kv for kv in kwargs.items()])
+
+
+ns = [200, 500, 1000]
+ps = [500, 1000, 5000, 10000]
+rhos_ss = [(0, 0), (0.4, 0), (0.8, 0), (0, 0.4), (0, 0.8), (0, 0.95)]
+DANTZIG_CONFIGS = [generate_config_str(n=n, p=p, rho=rho, s=s)
+                   for n, p, (rho, s) in it.product(ns, ps, rhos_ss)]
+
+
+rule dantzig_all:
+    input:
+        expand("dantzig/results/{config_str}.csv", config_str=DANTZIG_CONFIGS)
+
+rule dantzig:
+    output:
+        "dantzig/results/{config_str}.csv"
+    log:
+        "dantzig/logs/{config_str}.out"
+    shell:
+        # "srun -pty -p sched_mit_sloan_interactive"
+        "julia dantzig.jl {wildcards.config_str}"

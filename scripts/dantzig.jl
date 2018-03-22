@@ -1,50 +1,59 @@
-import DantzigLP
-@everywhere using DantzigLP, DataFrames, ProgressMeter, RCall, IterTools, CSV
+using DantzigLP, DataFrames, ProgressMeter, RCall, IterTools, CSV
 
-@everywhere function psm(X, y, λ; nlambda=1000)
+include("utils.jl")
+config = parse_config(ARGS[1])
+
+function psm(X, y, λ; nlambda=1000)
     result = R"fastclime::dantzig($X, $y, $λ, $nlambda)"
     return rcopy(result)
 end
 
-@everywhere function range_bins(a, b, bins)
+function range_bins(a, b, bins)
     bin_size = (b - a) / bins
     return a .+ collect(0:bins) .* bin_size
 end
 
-ns = [200, 500, 1000]
-ps = [500, 1000, 5000, 10000]
-rhos_ss = [(0, 0), (0.4, 0), (0.8, 0), (0, 0.4), (0, 0.8), (0, 0.95)]
-is = collect(1:20)
+instance_id = hash(config)
 
-srand(798)
-results = []
+X, y, actual = DantzigLP.regression_example(
+    config[:n], config[:p], 0.2 * config[:n] / config[:p];
+    rho=config[:rho], sparsity=config[:s])
+actual_y = X * actual
+max_lambda = maximum(abs.(X'y))
+min_lambda = norm((X') * (y - X * actual), Inf)
+all_lambda = range_bins(min_lambda, max_lambda, 50)
 
-params = product(ns, ps, rhos_ss, is) |> collect |> shuffle;
-results = @parallel vcat for param in params
-    @show param
-    instance_id = hash(param)
-    (n, p, (rho, s), i) = param
+# Warmup runs
+info("WARMING UP...")
+psm(X, y, min_lambda)
+DantzigLP.dantzig_lp(X, y, min_lambda)
+DantzigLP.baseline_dantzig(X, y, min_lambda, timeout=60)
 
-    X, y, actual = DantzigLP.regression_example(
-        n, p, 0.1; rho=rho, sparsity=s, standardize=true)
-    actual_y = X * actual
+# Logged runs
+info("STARTING BENCHMARKS...")
+psm_t = @elapsed psm(X, y, min_lambda)
+dlp_single_3_t = @elapsed DantzigLP.dantzig_lp(X, y, min_lambda;
+                                               solver_params=Dict(:Method=>3))
+dlp_path_3_t = @elapsed DantzigLP.dantzig_lp(X, y, all_lambda;
+                                             solver_params=Dict(:Method=>3))
+dlp_single_1_t = @elapsed DantzigLP.dantzig_lp(X, y, min_lambda;
+                                               solver_params=Dict(:Method=>1))
+dlp_path_1_t = @elapsed DantzigLP.dantzig_lp(X, y, all_lambda;
+                                             solver_params=Dict(:Method=>1))
+bl_3_t = @elapsed DantzigLP.baseline_dantzig(X, y, min_lambda;
+                                             Method=3, timeout=300)
+bl_1_t = @elapsed DantzigLP.baseline_dantzig(X, y, min_lambda;
+                                             Method=1, timeout=300)
 
-    max_lambda = maximum(abs.(X'y))
-    min_lambda = norm((X') * (y - X * actual), Inf)
-    all_lambda = range_bins(min_lambda, max_lambda, 50)
-    single_seconds = @elapsed DantzigLP.dantzig_lp(X, y, min_lambda)
-    psm_seconds = @elapsed psm(X, y, min_lambda)
-    path_seconds = @elapsed dantzig_lp(X, y, all_lambda)
+results = DataFrame(
+    algo = ["PSM", "DantzigLP", "DantzigLP", "DantzigLP", "DantzigLP",
+            "Gurobi", "Gurobi"],
+    lambda_path = [true, false, true, false, true, false, false],
+    solver = ["PSM", "Concurrent", "Concurrent", "Dual Simplex", "Dual Simplex",
+              "Concurrent", "Dual Simplex"],
+    seconds = [psm_t, dlp_single_3_t, dlp_path_3_t, dlp_single_1_t, dlp_path_1_t,
+               bl_3_t, bl_1_t],
+    n = config[:n], p = config[:p], rho = config[:rho], s = config[:s],
+    i = repr(instance_id), lambda = min_lambda)
 
-    df = DataFrame(algo = ["Dantzig LP (Single Lambda)",
-                           "Dantzig LP (Lambda Path)",
-                           "PSM"],
-                   seconds = [single_seconds,
-                              path_seconds,
-                              psm_seconds],
-                   n = n, p = p, rho = rho, s = s, i = instance_id,
-                   lambda = min_lambda)
-    df
-end
-
-CSV.write("dantzig_lp_results.csv", results)
+CSV.write(@sprintf("dantzig/results/%s.csv", ARGS[1]), results)
