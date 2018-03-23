@@ -57,7 +57,7 @@ end
 
 function tf_example(n, k, knots; SNR=10, increasing=true)
     # α_idx = vcat(sort(sample(1:(n - 1), knots, replace=false)), [n])
-    α_idx = sample(1:n, knots, replace=false)
+    α_idx = sample(1:n, Int(knots), replace=false)
     α = spzeros(n)
     raw_α = randn(knots) * 10
     α_values = raw_α
@@ -84,7 +84,7 @@ end
 
 function trend_filtering_example(n::Integer, k::Integer, knots::Integer;
                                  SNR=10, continuous=false)
-    knot_idx = vcat(sort(sample(1:(n - 1), knots, replace=false)), [n])
+    knot_idx = vcat(sort(sample(1:(n - 1), Int(knots), replace=false)), [n])
     diffs = knot_idx .- shift(knot_idx, 1)
     piecewise_fns = [random_polynomial(diff, k) for diff in diffs]
 
