@@ -3,8 +3,8 @@ using DantzigLP, DataFrames, ProgressMeter, RCall, IterTools, CSV
 include("utils.jl")
 config = parse_config(ARGS[1])
 
-function psm(X, y, λ; nlambda=1000)
-    result = R"fastclime::dantzig($X, $y, $λ, $nlambda)"
+function psm(X, y, lambda; nlambda=1000)
+    result = R"max(system.time(fastclime::dantzig($X, $y, $lambda, $nlambda)))"
     return rcopy(result)
 end
 
@@ -25,13 +25,13 @@ all_lambda = range_bins(min_lambda, max_lambda, 50)
 
 # Warmup runs
 info("WARMING UP...")
-psm(X, y, min_lambda)
+# psm(X, y, min_lambda)
 DantzigLP.dantzig_lp(X, y, min_lambda)
 DantzigLP.baseline_dantzig(X, y, min_lambda, timeout=60)
 
 # Logged runs
 info("STARTING BENCHMARKS...")
-psm_t = @elapsed psm(X, y, min_lambda)
+psm_t = psm(X, y, min_lambda)
 dlp_single_3_t = @elapsed DantzigLP.dantzig_lp(X, y, min_lambda;
                                                solver_params=Dict(:Method=>3))
 dlp_path_3_t = @elapsed DantzigLP.dantzig_lp(X, y, all_lambda;
