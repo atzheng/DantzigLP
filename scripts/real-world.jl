@@ -4,7 +4,7 @@ using DantzigLP, Lasso, DataFrames, CSV
 # Load Data
 # ==============================================================================
 dataset = ARGS[1]
-DATA_DIR = "/pool001/dantzig/"
+DATA_DIR = "/pool001/atz/dantzig/"
 function load_data(fname)
     return readdlm(joinpath(DATA_DIR, dataset, fname), ',')
 end

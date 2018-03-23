@@ -4,14 +4,16 @@ import itertools as it
 def generate_config_str(**kwargs):
     return '_'.join(["%s=%s" % kv for kv in kwargs.items()])
 
-
-ns = [200, 500, 1000]
-ps = [500, 1000, 5000, 10000]
-rhos_ss = [(0, 0), (0.4, 0), (0.8, 0), (0, 0.4), (0, 0.8), (0, 0.95)]
-instances = list(range(20))
-DANTZIG_CONFIGS = [generate_config_str(n=n, p=p, rho=rho, s=s, i=i)
-                   for n, p, (rho, s), i in it.product(ns, ps, rhos_ss, instances)]
-
+# Dantzig Benchmarks
+# ==============================================================================
+dantzig_ns = [200, 500, 1000]
+dantzig_ps = [500, 1000, 5000, 10000]
+dantzig_rhos_ss = [(0, 0), (0.4, 0), (0.8, 0), (0, 0.4), (0, 0.8), (0, 0.95)]
+dantzig_is = list(range(20))
+DANTZIG_CONFIGS = [
+    generate_config_str(n=n, p=p, rho=rho, s=s, i=i)
+    for n, p, (rho, s), i in it.product(
+            dantzig_ns, dantzig_ps, dantzig_rhos_ss, dantzig_is)]
 
 rule dantzig_all:
     input:
@@ -24,3 +26,30 @@ rule dantzig:
         "dantzig/logs/{config_str}.out"
     shell:
         "julia dantzig.jl {wildcards.config_str}"
+
+
+# Real-World Benchmarks
+# ==============================================================================
+REAL_WORLD_DATASETS = ["AmazonLarge", "Boston1M", "CensusLarge"]
+rule real_world_all:
+    input:
+        expand("real-world/{dataset}.csv", dataset=REAL_WORLD_DATASETS)
+
+rule real_world:
+    output:
+        "real-world/{dataset}.csv"
+    log:
+        "real-world/{dataset}.out"
+    shell:
+        "julia real-world.jl {wildcards.dataset}"
+
+
+# Group Lasso Benchmarks
+# ==============================================================================
+group_ns = [200, 500, 1000]
+group_ps = [500, 1000, 5000, 10000]
+group_gs = [20, 50, 100]
+group_is = list(range(20))
+GROUP_CONFIGS = [
+    generate_config_str(n=n, p=p, g=g, i=i)
+    for n, p, g, i in it.product(group_ns, group_ps, group_gs, group_is)]
