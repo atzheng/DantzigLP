@@ -26,7 +26,7 @@ function dantzig_tf(y, λ, k; return_α=false, lasso_tol=1e-9, rounding_tol=1e-8
     vinfo(msg) = verbose_info(verbose, msg)
 
     if !colgen && !congen
-        return full_dantzig_tf(y, λ, k; return_α = return_α, args...)
+        return baseline_dantzig_tf(y, λ, k; return_α = return_α, args...)
     end
 
     n = length(y)
@@ -151,10 +151,10 @@ function trend_filtering_initializer(y, λ, k; rounding_tol=1e-8, args...)
 end
 
 
-function full_dantzig_tf(y, λ, k;
-                         verbose = false, return_α = false,
-                         timeout = Inf, tol = 1e-6, exact = true,
-                         solver_params = Dict(), args...)
+function baseline_dantzig_tf(y, λ, k;
+                             verbose = false, return_α = false,
+                             timeout = Inf, tol = 1e-6, exact = true,
+                             solver_params = Dict(), args...)
     start_time = time_ns()
 
     n = length(y)
