@@ -34,7 +34,7 @@ function solve_dantzig_lp!(model, λ, initial_soln;
                            initialize_basis = false,
                            verbose = false, timeout = Inf,
                            solver_params = Dict(),
-                           tol = 1e-9)
+                           tol = 1e-4)
 
     vinfo(msg) = verbose_info(verbose, msg)
 
@@ -118,28 +118,6 @@ function solve_model(model, delta,
 
     # Start solver
     while status == :InProgress
-        # ----------------------------------------------------------------------
-        # JUNK
-        # n, p = model.size
-        # β = spzeros(p)
-        # β[model.pos_beta_indices] = getvalue(model.pos_betas)
-        # β[model.neg_beta_indices] -= getvalue(model.neg_betas)
-        # info(@sprintf("β hash: %s", repr(hash(round(β * 1000)))))
-        # info(@sprintf("β support hash: %s", repr(hash(β.nzind))))
-
-        # cbasis, rbasis = MathProgBase.getbasis(
-        #     internalmodel(model.gurobi_model))
-        # info(@sprintf("CBasis support hash: %s",
-        #               repr(hash(find(cbasis .== :Basic)))))
-        # info(@sprintf("RBasis support hash: %s",
-        #               repr(hash(find(rbasis .== :Basic)))))
-
-        # b = vcat(y, fill(0, p), fill(delta, k))
-        # duals = model.gurobi_model.linconstrDuals
-        # info(model.gurobi_model.objVal - duals'b)
-        # ----------------------------------------------------------------------
-
-
         seconds_elapsed = (time_ns() - start_time) / 1.0e9
         if seconds_elapsed > timeout
             status = :Timeout
@@ -148,8 +126,8 @@ function solve_model(model, delta,
 
         # feas = norm(model.X'getvalue(model.residuals), Inf) - delta
         # pct_feas = (norm(model.X'getvalue(model.residuals), Inf) - delta) / delta
-        # obj = (norm(getvalue(model.pos_betas), 1) +
-        #        norm(getvalue(model.neg_betas), 1))
+        # obj = (sum(abs(getvalue(model.pos_betas)))
+        #        + sum(abs(getvalue(model.neg_betas))))
         # iteration_log = DataFrame(seconds = seconds_elapsed,
         #                           feas = feas,
         #                           pct_feas = pct_feas,
@@ -169,7 +147,6 @@ function solve_model(model, delta,
 
             while length(new_pos_constrs) + length(new_neg_constrs) > 0
                 solve_status, solve_time = @timed solve(model.gurobi_model)
-                @show solve_status
                 if solve_status == :Infeasible
                     break
                 end
@@ -202,7 +179,6 @@ function solve_model(model, delta,
                 status = :Optimal
             else
                 solve_status, solve_time = @timed solve(model.gurobi_model)
-                @show solve_status
                 gurobi_seconds += solve_time
                 columns_generated += length(new_columns)
             end
