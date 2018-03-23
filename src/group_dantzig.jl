@@ -61,12 +61,8 @@ end
 
 function group_dantzig(X, y, g, λ; lasso_tol=1e-5, args...)
     k = length(unique(g))
-    args_dict = Dict(args)
-    # Typically small number |G| of constraints; no congen for now.
+    args_dict = Dict{Symbol, Any}(args)
     verbose = get(args_dict, :verbose, false)
-    # args_dict[:constraint_generation] = false
-    # # Column generation policy will be to add one group at a time.
-    # args_dict[:max_columns] = 1
     args_dict[:max_constraints] = k
     vinfo(msg) = verbose_info(verbose, msg)
 
@@ -82,6 +78,8 @@ function group_dantzig(X, y, g, λ; lasso_tol=1e-5, args...)
                    initializer_secs, norm(initial_soln, 0)))
 
     β, diagnostics = solve_dantzig_lp!(model, λ, initial_soln; args_dict...)
+    diagnostics[:initializer_secs] = initializer_secs
+    diagnostics[:construction_secs] = construction_secs
     return β, model, diagnostics
 end
 
