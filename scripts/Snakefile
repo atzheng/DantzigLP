@@ -8,8 +8,9 @@ def generate_config_str(**kwargs):
 ns = [200, 500, 1000]
 ps = [500, 1000, 5000, 10000]
 rhos_ss = [(0, 0), (0.4, 0), (0.8, 0), (0, 0.4), (0, 0.8), (0, 0.95)]
-DANTZIG_CONFIGS = [generate_config_str(n=n, p=p, rho=rho, s=s)
-                   for n, p, (rho, s) in it.product(ns, ps, rhos_ss)]
+instances = list(range(20))
+DANTZIG_CONFIGS = [generate_config_str(n=n, p=p, rho=rho, s=s, i=i)
+                   for n, p, (rho, s), i in it.product(ns, ps, rhos_ss, instances)]
 
 
 rule dantzig_all:
@@ -22,5 +23,4 @@ rule dantzig:
     log:
         "dantzig/logs/{config_str}.out"
     shell:
-        # "srun -pty -p sched_mit_sloan_interactive"
         "julia dantzig.jl {wildcards.config_str}"
