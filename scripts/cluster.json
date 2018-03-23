@@ -1,0 +1,8 @@
+{"__default__": 
+  {
+    "time": "00:30:00",
+    "partition": "sched_mit_sloan_batch",
+    "mem": 32G,
+    "cpu": 2
+  }
+}
