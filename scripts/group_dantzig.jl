@@ -1,4 +1,5 @@
 using DantzigLP, CSV
+include("utils.jl")
 
 config = parse_config(ARGS[1])
 
