@@ -44,14 +44,17 @@ function dantzig_tf(y, λ, k; return_α=false, lasso_tol=1e-9, rounding_tol=1e-8
                        initializer_secs))
     end
 
-    α, log = solve_dantzig_lp!(model, λ, initial_soln; args...)
+    α, diagnostics = solve_dantzig_lp!(model, λ, initial_soln; args...)
+
+    diagnostics[:construction_seconds] = construction_secs
+    diagnostics[:initializer_seconds] = initializer_secs
 
     if return_α
         soln = α
     else
         soln = getvalue(model.β)
     end
-    return soln, model, log
+    return soln, model, diagnostics
 end
 
 
@@ -123,6 +126,7 @@ end
 function get_reduced_costs(model::DantzigTFModel)
     # First n constraints correspond to the α constraints.
     # TODO Shouldn't need to make this assumption....
+    n, p = model.size
     duals = model.gurobi_model.linconstrDuals[1:n]
     return (1 .+ duals, 1 .- duals)
 end
@@ -138,7 +142,7 @@ function trend_filtering_initializer(y, λ, k; rounding_tol=1e-8, args...)
     n = length(y)
     if k == 0
         β = StatsBase.fit(FusedLasso, y, λ).β
-        α_B = difference_operator(n, k + 1) * β
+        α_B = sparse(β[2:end] - β[1:end - 1])
     else
         raw_α_B = StatsBase.fit(TrendFilter, y, k, λ; args...).Dkp1β
         α_B = round_small(raw_α_B, rounding_tol)
@@ -159,7 +163,7 @@ function baseline_dantzig_tf(y, λ, k;
 
     n = length(y)
     vinfo(msg) = verbose_info(verbose, msg)
-0
+
     vinfo("Constructing model...")
     default_params = Dict([(:Method, ifelse(exact, -1, 2)),
                            (:Crossover, ifelse(exact, -1, 0)),
