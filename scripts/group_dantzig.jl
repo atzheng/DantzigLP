@@ -13,18 +13,20 @@ baseline_group_dantzig(X, y, g, λ)
 instance_id = hash(config)
 
 s = 0.2 * config[:n] / config[:p]
-X, y, g, β = DantzigLP.group_dantzig_example(config[:n], config[:p], config[:g], s)
+X, y, g, β = DantzigLP.group_dantzig_example(
+    config[:n], config[:p], config[:g], s)
 λ = norm((X') * (y - X * β), Inf)
 
 # Run instance
-bl_time = @elapsed model, βdantzig = DantzigLP.baseline_group_dantzig(X, y, g, λ)
+bl_time = @elapsed model, βdantzig =
+    DantzigLP.baseline_group_dantzig(X, y, g, λ)
 cg_time = @elapsed βbp, model, diagnostics =
     DantzigLP.group_dantzig(X, y, g, λ; verbose=true)
 
 diagnostics[:baseline_secs] = bl_time
 diagnostics[:total_secs] = cg_time
 diagnostics[:instance_id] = repr(instance_id)
-diagnostics[:n] = n
-diagnostics[:p] = p
+diagnostics[:n] = config[:n]
+diagnostics[:p] = config[:p]
 
 CSV.write(@sprintf("group_dantzig/results/%s.csv", ARGS[1]), diagnostics)

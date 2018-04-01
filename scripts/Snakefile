@@ -53,3 +53,39 @@ group_is = list(range(20))
 GROUP_CONFIGS = [
     generate_config_str(n=n, p=p, g=g, i=i)
     for n, p, g, i in it.product(group_ns, group_ps, group_gs, group_is)]
+
+rule group_all:
+    input:
+        expand("group_dantzig/results/{config_str}.csv",
+               config_str=GROUP_CONFIGS)
+
+rule group:
+    output:
+        "group_dantzig/results/{config_str}.csv"
+    log:
+        "group_dantzig/logs/{config_str}.out"
+    shell:
+        "julia group_dantzig.jl {wildcards.config_str}"
+
+
+# Dantzig TF Benchmarks
+# ==============================================================================
+tf_ns = [10000, 50000, 100000, 200000, 500000]
+tf_knots = [200, 2000, 5000]
+tf_is = list(range(20))
+TF_CONFIGS = [
+    generate_config_str(n=n, p=p, g=g, i=i)
+    for n, p, g, i in it.product(tf_ns, tf_knots, tf_is)]
+
+rule tf_all:
+    input:
+        expand("dantzig_tf/results/{config_str}.csv",
+               config_str=TF_CONFIGS)
+
+rule tf:
+    output:
+        "dantzig_tf/results/{config_str}.csv"
+    log:
+        "dantzig_tf/logs/{config_str}.out"
+    shell:
+        "julia dantzig_trend_filtering.jl {wildcards.config_str}"
