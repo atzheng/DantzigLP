@@ -74,8 +74,8 @@ tf_ns = [10000, 50000, 100000, 200000, 500000]
 tf_knots = [200, 2000, 5000]
 tf_is = list(range(20))
 TF_CONFIGS = [
-    generate_config_str(n=n, p=p, g=g, i=i)
-    for n, p, g, i in it.product(tf_ns, tf_knots, tf_is)]
+    generate_config_str(n=n, knots=knots, i=i)
+    for n, knots, i in it.product(tf_ns, tf_knots, tf_is)]
 
 rule tf_all:
     input:

@@ -15,6 +15,14 @@ end
 
 instance_id = hash(config)
 
+# Warmup runs
+info("WARMING UP...")
+X, y, actual = DantzigLP.regression_example(100, 200, 0.2)
+psm(X, y, 1)
+DantzigLP.dantzig_lp(X, y, 1)
+DantzigLP.baseline_dantzig(X, y, 1, timeout=60)
+
+# Logged runs
 X, y, actual = DantzigLP.regression_example(
     config[:n], config[:p], 0.2 * config[:n] / config[:p];
     rho=config[:rho], sparsity=config[:s])
@@ -23,13 +31,7 @@ max_lambda = maximum(abs.(X'y))
 min_lambda = norm((X') * (y - X * actual), Inf)
 all_lambda = range_bins(min_lambda, max_lambda, 50)
 
-# Warmup runs
-info("WARMING UP...")
-# psm(X, y, min_lambda)
-DantzigLP.dantzig_lp(X, y, min_lambda)
-DantzigLP.baseline_dantzig(X, y, min_lambda, timeout=60)
 
-# Logged runs
 info("STARTING BENCHMARKS...")
 psm_t = psm(X, y, min_lambda)
 dlp_single_3_t = @elapsed DantzigLP.dantzig_lp(X, y, min_lambda;

@@ -28,5 +28,6 @@ diagnostics[:total_secs] = cg_time
 diagnostics[:instance_id] = repr(instance_id)
 diagnostics[:n] = config[:n]
 diagnostics[:p] = config[:p]
+diagnostics[:g] = config[:g]
 
 CSV.write(@sprintf("group_dantzig/results/%s.csv", ARGS[1]), diagnostics)

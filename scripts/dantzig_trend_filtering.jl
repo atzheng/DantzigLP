@@ -41,4 +41,4 @@ cg_diagnostics[:instance_id] = repr(instance_id)
 cg_diagnostics[:n] = config[:n]
 cg_diagnostics[:knots] = config[:knots]
 
-CSV.write(@sprintf("dantzig_tf/results/%s.csv", ARGS[1]), diagnostics)
+CSV.write(@sprintf("dantzig_tf/results/%s.csv", ARGS[1]), cg_diagnostics)
