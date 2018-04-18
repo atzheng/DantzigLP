@@ -78,8 +78,8 @@ function group_dantzig(X, y, g, λ; lasso_tol=1e-5, args...)
                    initializer_secs, norm(initial_soln, 0)))
 
     β, diagnostics = solve_dantzig_lp!(model, λ, initial_soln; args_dict...)
-    diagnostics[:initializer_secs] = initializer_secs
-    diagnostics[:construction_secs] = construction_secs
+    diagnostics[:initializer_seconds] = initializer_secs
+    diagnostics[:construction_seconds] += construction_secs
     return β, model, diagnostics
 end
 

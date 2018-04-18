@@ -67,7 +67,10 @@ function solve_dantzig_lp!(model, λ, initial_soln;
                                      constraint_generation, max_constraints,
                                      verbose, timeout, tol)
 
-    vinfo(@sprintf("Column and constraint initialization finished in %.2f seconds.", (time_ns() - start_time) / 1e9))
+    construction_secs = (time_ns() - start_time) / 1e9
+    vinfo(@sprintf(
+        "Column and constraint initialization finished in %.2f seconds.",
+        construction_secs))
 
     # Solve
     # --------------------------------------------------------------------------
@@ -88,6 +91,7 @@ function solve_dantzig_lp!(model, λ, initial_soln;
     else
         coefs, diagnostics = solver(model, λ)
     end
+    diagnostics[:construction_seconds] = construction_secs
     return (coefs, diagnostics)
 end
 
@@ -105,6 +109,7 @@ function solve_model(model, delta,
     gurobi_seconds = 0
     initial_vars = union(model.pos_beta_indices, model.neg_beta_indices)
     solve_status, solve_time = @timed solve(model.gurobi_model)
+    vinfo(msg) = verbose_info(verbose, msg)
 
     if solve_status == :Infeasible
         throw(InfeasibilityError())
@@ -153,6 +158,8 @@ function solve_model(model, delta,
                 gurobi_seconds += solve_time
                 new_pos_constrs, new_neg_constrs =
                     generate_constraints!(model, delta, max_constraints, tol)
+                vinfo(@sprintf("Adding constraints: pos: %s, neg: %s",
+                               repr(new_pos_constrs), repr(new_neg_constrs)))
                 push!(pos_constrs, new_pos_constrs)
                 push!(neg_constrs, new_neg_constrs)
             end
@@ -162,8 +169,7 @@ function solve_model(model, delta,
 
             n_new_constrs = length(flat_pos_constrs) + length(flat_neg_constrs)
             constraints_generated += n_new_constrs
-            if verbose info(@sprintf("Generated %d constraints.",
-                                     n_new_constrs)) end
+            vinfo(@sprintf("Generated %d constraints.", n_new_constrs))
 
             constraint_generation_seconds +=
                 (time_ns() - congen_start_ts) / 1.0e9
@@ -173,8 +179,7 @@ function solve_model(model, delta,
         if column_generation
             colgen_start_ts = time_ns()
             new_columns = generate_columns!(model, max_columns, tol)
-            if verbose info(@sprintf("Generated %d columns.",
-                                    length(new_columns))) end
+            vinfo(@sprintf("Generated %d columns.", length(new_columns)))
             if length(new_columns) == 0
                 status = :Optimal
             else
@@ -276,10 +281,14 @@ function generate_constraints!(model::DantzigModel, delta,
         val = constraint_values[row]
         if val < -delta - tol
             new_constr = add_Xtr_constr!(model, delta, row, -1)
-            push!(new_neg_constrs, new_constr)
+            if new_constr != nothing
+                push!(new_neg_constrs, new_constr)
+            end
         elseif val > delta + tol
             new_constr = add_Xtr_constr!(model, delta, row, 1)
-            push!(new_pos_constrs, new_constr)
+            if new_constr != nothing
+                push!(new_pos_constrs, new_constr)
+            end
         end
     end
     return new_pos_constrs, new_neg_constrs

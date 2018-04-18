@@ -46,7 +46,7 @@ function dantzig_tf(y, λ, k; return_α=false, lasso_tol=1e-9, rounding_tol=1e-8
 
     α, diagnostics = solve_dantzig_lp!(model, λ, initial_soln; args...)
 
-    diagnostics[:construction_seconds] = construction_secs
+    diagnostics[:construction_seconds] += construction_secs
     diagnostics[:initializer_seconds] = initializer_secs
 
     if return_α
@@ -152,6 +152,12 @@ function trend_filtering_initializer(y, λ, k; rounding_tol=1e-8, args...)
     results[1:k + 1] = 1
     results[k + 2:end] = α_B
     return results
+end
+
+function round_small(X, tol)
+    Y = spzeros(size(X)...)
+    Y[abs.(X) .>= tol] = X[abs.(X) .>= tol]
+    return Y
 end
 
 
