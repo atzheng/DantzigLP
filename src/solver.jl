@@ -1,4 +1,5 @@
 # The main engine for fast Dantzig estimation. Handles column and constraint
+
 # generation, solving for λ paths, and diagnostics.
 
 # For each type of Dantzig problem, we need specialized methods for the
@@ -42,8 +43,9 @@ function solve_dantzig_lp!(model, λ, initial_soln;
     start_time = time_ns()
     # Initialize
     # --------------------------------------------------------------------------
-    solver = construct_solver(verbose = verbose, tol = tol, timeout = timeout,
-                              params = solver_params)
+    solver = construct_solver(verbose = verbose,
+                              tol = tol,
+                              timeout = timeout; solver_params...)
     setsolver(model.gurobi_model, solver)
 
     if column_generation

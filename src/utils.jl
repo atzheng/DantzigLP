@@ -174,15 +174,13 @@ function verbose_info(verbose, msg)
 end
 
 
-function construct_solver(; verbose = false, tol = 1e-6, timeout = Inf,
-                          params = Dict(), args...)
-
+function construct_solver(; verbose = false, tol = 1e-6, timeout = Inf, args...)
     default_params = Dict([(:OutputFlag, ifelse(verbose, 1, 0)),
                            (:TimeLimit, timeout),
                            (:FeasibilityTol, tol),
                            (:OptimalityTol, tol)])
 
-    params_w_defaults = merge(default_params, params)
+    params_w_defaults = merge(default_params, Dict(args))
     solver = GurobiSolver(; params_w_defaults...)
     return solver
 end
