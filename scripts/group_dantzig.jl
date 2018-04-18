@@ -19,9 +19,10 @@ X, y, g, β = DantzigLP.group_dantzig_example(
 
 # Run instance
 bl_time = @elapsed model, βdantzig =
-    DantzigLP.baseline_group_dantzig(X, y, g, λ)
+    DantzigLP.baseline_group_dantzig(X, y, g, λ; Method = 1)
 cg_time = @elapsed βbp, model, diagnostics =
-    DantzigLP.group_dantzig(X, y, g, λ; verbose=true)
+    DantzigLP.group_dantzig(X, y, g, λ; verbose=true,
+                            solver_params=Dict(:Method=>1))
 
 diagnostics[:baseline_secs] = bl_time
 diagnostics[:total_secs] = cg_time

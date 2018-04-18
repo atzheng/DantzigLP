@@ -1,40 +1,35 @@
-@everywhere using DantzigLP, IterTools, ProgressMeter, CSV
+using DantzigLP, CSV
+include("utils.jl")
 
-@everywhere function run_instance(n, p)
-    X, y, β, α = DantzigLP.fused_regression_example(n, p, 20)
-    λ = norm((X') * (y - X * β), Inf)
+config = parse_config(ARGS[1])
+n = config[:n]
+p = config[:p]
 
-    bl_time = @elapsed model, βdantzig =
-        DantzigLP.baseline_dantzig_fused_regression(X, y, λ; timeout=300)
-    cg_time = @elapsed βbp, model, diagnostics =
-        DantzigLP.dantzig_fused_regression(
-            X, y, λ; max_columns=40, verbose=false,
-            column_generation=false)
+# Warmup
+X, y, β, α = DantzigLP.fused_regression_example(200, 200, 20)
+λ = 0.1
+DantzigLP.baseline_dantzig_fused_regression(X, y, λ; timeout=300)
+DantzigLP.dantzig_fused_regression(
+    X, y, λ; max_columns=40, verbose=false,
+    column_generation=false)
 
-    diagnostics[:baseline_secs] = bl_time
-    diagnostics[:total_secs] = cg_time
-    return diagnostics
-end
 
-ns = [200, 500, 1000]
-ps = [500, 1000, 5000, 10000]
-instances = collect(1:20)
+# Benchmarks
+X, y, β, α = DantzigLP.fused_regression_example(n, p, 20)
+λ = norm((X') * (y - X * β), Inf)
+bl_time = @elapsed model, βdantzig =
+    DantzigLP.baseline_dantzig_fused_regression(X, y, λ; Method=1)
+cg_time = @elapsed βbp, model, diagnostics =
+    DantzigLP.dantzig_fused_regression(
+        X, y, λ; max_columns=40, verbose=false,
+        column_generation=false, solver_params=Dict(:Method=>1))
 
-params = product(ns, ps, instances) |> collect |> shuffle
+diagnostics[:baseline_secs] = bl_time
+diagnostics[:total_secs] = cg_time
 
-srand(798)
-results = @parallel vcat for param in params
-    gc()
-    @show param
-    instance_id = hash(param)
-    n, p, i = param
+instance_id = hash(config)
+diagnostics[:instance_id] = instance_id
+diagnostics[:n] = n
+diagnostics[:p] = p
 
-    diagnostics = run_instance(n, p)
-    diagnostics[:instance_id] = instance_id
-    diagnostics[:n] = n
-    diagnostics[:p] = p
-
-    diagnostics
-end
-
-CSV.write("fused_regression.csv", results)
+CSV.write(@sprintf("fused_regression/results/%s.csv", ARGS[1]), diagnostics)

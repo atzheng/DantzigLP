@@ -27,6 +27,13 @@ rule dantzig:
     shell:
         "julia dantzig.jl {wildcards.config_str}"
 
+lambda_pct = [1, 0.7, 0.4, 0.1]
+rule dantzig_lambdas:
+    input:
+        expand("dantzig/results/n=500_p=5000_rho=0.0_s=0.0_lambdapct={lambda_pct}_i={i}.csv",
+               lambda_pct=lambda_pct, i=dantzig_is)
+
+
 
 # Real-World Benchmarks
 # ==============================================================================
@@ -47,7 +54,7 @@ rule real_world:
 # Group Lasso Benchmarks
 # ==============================================================================
 group_ns = [200, 500, 1000]
-group_ps = [500, 1000, 5000, 10000]
+group_ps = [500, 1000, 5000]
 group_gs = [20, 50, 100]
 group_is = list(range(20))
 GROUP_CONFIGS = [
@@ -71,7 +78,7 @@ rule group:
 # Dantzig TF Benchmarks
 # ==============================================================================
 tf_ns = [10000, 50000, 100000, 200000, 500000]
-tf_knots = [200, 2000, 5000]
+tf_knots = [100, 200, 1000]
 tf_is = list(range(20))
 TF_CONFIGS = [
     generate_config_str(n=n, knots=knots, i=i)
@@ -89,3 +96,70 @@ rule tf:
         "dantzig_tf/logs/{config_str}.out"
     shell:
         "julia dantzig_trend_filtering.jl {wildcards.config_str}"
+
+
+tfk_ns = [1000, 5000, 10000]
+tfk_knots = [20]
+tfk_is = list(range(20))
+tfk_ks = [1, 2]
+TFK_CONFIGS = [
+    generate_config_str(n=n, knots=knots, i=i, k=k)
+    for n, knots, i, k in it.product(tfk_ns, tfk_knots, tfk_is, tfk_ks)]
+
+rule tfk_all:
+    input:
+        expand("dantzig_tfk/results/{config_str}.csv",
+               config_str=TFK_CONFIGS)
+
+rule tfk:
+    output:
+        "dantzig_tfk/results/{config_str}.csv"
+    log:
+        "dantzig_tfk/logs/{config_str}.out"
+    shell:
+        "julia dantzig_trend_filtering.jl {wildcards.config_str}"
+
+# Basis Pursuit Benchmarks
+# ==============================================================================
+bp_ns = [200, 500, 1000]
+bp_ps = [500, 1000, 10000, 100000, 400000]
+bp_is = list(range(20))
+BP_CONFIGS = [
+    generate_config_str(n=n, p=p, i=i)
+    for n, p, i in it.product(bp_ns, bp_ps, bp_is)]
+
+rule bp_all:
+    input:
+        expand("basis_pursuit/results/{config_str}.csv",
+               config_str=BP_CONFIGS)
+
+rule bp:
+    output:
+        "basis_pursuit/results/{config_str}.csv"
+    log:
+        "basis_pursuit/logs/{config_str}.out"
+    shell:
+        "julia basis_pursuit.jl {wildcards.config_str}"
+
+
+# Fused Dantzig Benchmarks
+# ==============================================================================
+fr_ns = [200, 500, 1000]
+fr_ps = [500, 1000, 5000, 10000]
+fr_is = list(range(20))
+FR_CONFIGS = [
+    generate_config_str(n=n, p=p, i=i)
+    for n, p, i in it.product(fr_ns, fr_ps, fr_is)]
+
+rule fr_all:
+    input:
+        expand("fused_regression/results/{config_str}.csv",
+               config_str=FR_CONFIGS)
+
+rule fr:
+    output:
+        "fused_regression/results/{config_str}.csv"
+    log:
+        "fused_regression/logs/{config_str}.out"
+    shell:
+        "julia fused_regression.jl {wildcards.config_str}"

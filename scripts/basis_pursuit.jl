@@ -1,43 +1,36 @@
-@everywhere using DantzigLP, IterTools, ProgressMeter, CSV
+using DantzigLP, CSV
+include("utils.jl")
 
-@everywhere function run_instance(n, p, compare=false)
-    X, y, β = DantzigLP.basis_pursuit_example(n, p, 0.1)
+config = parse_config(ARGS[1])
 
-    if compare
-        bl_time = @elapsed model, βdantzig = DantzigLP.baseline_basis_pursuit(
-            X, y; timeout=300)
-    else
-        bl_time = nothing
-    end
+# Warmup
+X, y, β = DantzigLP.basis_pursuit_example(100, 500, 0.1)
+DantzigLP.baseline_basis_pursuit(X, y; timeout=300)
+DantzigLP.basis_pursuit(X, y; max_columns=40, verbose=false)
 
-    cg_time = @elapsed βbp, model, diagnostics = DantzigLP.basis_pursuit(
-        X, y; max_columns=40, verbose=false)
+# Benchmarks
+s = 0.2 * config[:n] / config[:p]
+n = config[:n]
+p = config[:p]
 
-    diagnostics[:baseline_secs] = bl_time
-    diagnostics[:total_secs] = cg_time
-    return diagnostics
+X, y, β = DantzigLP.basis_pursuit_example(n, p, s)
+
+if p < 100000
+    bl_time = @elapsed model, βdantzig = DantzigLP.baseline_basis_pursuit(
+        X, y; timeout=600, Method=1)
+else
+    bl_time = nothing
 end
 
-ns = [200, 500, 1000]
-ps = [500, 1000, 10000, 100000, 400000]
-instances = collect(1:20)
+cg_time = @elapsed βbp, model, diagnostics = DantzigLP.basis_pursuit(
+    X, y; max_columns=40, verbose=false, solver_params=Dict(:Method => 1))
 
-params = product(ns, ps, instances) |> collect |> shuffle
+instance_id = hash(ARGS[1])
 
-srand(798)
-results = @parallel vcat for param in params
-    gc()
-    @show param
-    instance_id = hash(param)
-    n, p, i = param
-    compare = n * p <= 1000 * 10000
+diagnostics[:baseline_secs] = bl_time
+diagnostics[:total_secs] = cg_time
+diagnostics[:instance_id] = repr(instance_id)
+diagnostics[:n] = n
+diagnostics[:p] = p
 
-    diagnostics = run_instance(n, p, compare)
-    diagnostics[:instance_id] = instance_id
-    diagnostics[:n] = n
-    diagnostics[:p] = p
-
-    diagnostics
-end
-
-CSV.write("basis_pursuit.csv", results)
+CSV.write(@sprintf("basis_pursuit/results/%s.csv", ARGS[1]), diagnostics)
