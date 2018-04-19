@@ -1,5 +1,4 @@
 # The main engine for fast Dantzig estimation. Handles column and constraint
-
 # generation, solving for λ paths, and diagnostics.
 
 # For each type of Dantzig problem, we need specialized methods for the
@@ -35,7 +34,7 @@ function solve_dantzig_lp!(model, λ, initial_soln;
                            initialize_basis = false,
                            verbose = false, timeout = Inf,
                            solver_params = Dict(),
-                           tol = 1e-4)
+                           tol = 1e-9)
 
     vinfo(msg) = verbose_info(verbose, msg)
 

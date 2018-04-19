@@ -13,6 +13,7 @@ type GroupDantzigModel <: DantzigModel
     residuals        # JuMP variables corresponding to residuals
     ∇⁺               # JuMP variables corresponding to X'r₊
     ∇⁻               # JuMP variables corresponding to X'r₋
+    βg               # JuMP variables corresponding to βg
     # Constraints
     residual_constrs # Constraints r = y - Xβ
     βg_constrs       # Constraints βg ≥ norm(β_i, ∞) ∀ i ∈ g, g ∈ G
@@ -20,6 +21,8 @@ type GroupDantzigModel <: DantzigModel
     # Problem Data
     groups           # Vector mapping coefficients to groups
     X                # Data matrix X
+    y                # Response vector y
+    λ
 end
 
 
@@ -54,8 +57,8 @@ function GroupDantzigModel(X, y, g, λ; args...)
 
     obj = @objective(model, Min, sum(βg))
 
-    return GroupDantzigModel(model, (n, p), [], [], [], [], r, ∇⁺, ∇⁻,
-                             residual_constrs, βg_constrs, [], groups, X)
+    return GroupDantzigModel(model, (n, p), [], [], [], [], r, ∇⁺, ∇⁻, βg,
+                             residual_constrs, βg_constrs, [], groups, X, y, λ)
 end
 
 
@@ -152,7 +155,7 @@ function add_beta!(model::GroupDantzigModel, idx::Integer, sgn::Number)
                                  [model.βg_constrs[idx]]),
             coefficients = vcat(sgn * full(model.X[:, idx]), [-1]),
             lowerbound = 0)
-        # @debug @sprintf("Added %d β[%d].", sgn, idx)
+
         push!(beta_indices, idx)
         push!(betas, new_var)
         return new_var
@@ -161,9 +164,15 @@ end
 
 
 function generate_columns!(model::GroupDantzigModel, max_columns, tol)
-    return invoke(generate_columns!, Tuple{DantzigModel, Any, Any},
-                  model, max_columns, tol)
+    if group_check_dual_feas(model; Method=1)
+        info("Dual feasible solution found. Terminating column generation.")
+        return []
+    else
+        return invoke(generate_columns!, Tuple{DantzigModel, Any, Any},
+                      model, max_columns, tol)
+    end
 end
+
 
 # """
 # Generates all columns for a group at once. Adds the group corresponding to the
@@ -194,6 +203,7 @@ end
 
 function get_reduced_costs(model::GroupDantzigModel)
     n, p = model.size
+
     residual_duals = model.gurobi_model.linconstrDuals[1:n]
     βg_max_duals = model.gurobi_model.linconstrDuals[n + 1:n + p]
 
@@ -203,6 +213,84 @@ function get_reduced_costs(model::GroupDantzigModel)
     return (pos_reduced_costs, neg_reduced_costs)
 end
 
+
+function group_check_dual_feas(primal; args...)
+    X = primal.X
+    y = primal.y
+    λ = primal.λ
+    tol=1e-6
+
+    # Setup
+    n, p = size(X)
+    n_groups = length(unique(primal.groups))
+    G = spzeros(p, n_groups)
+    for (j, grp) in enumerate(primal.groups)
+        G[j, grp] = 1
+    end
+
+    # Complementary slackness conds
+    nzβ⁺ = primal.pos_beta_indices[find(getvalue(primal.pos_betas) .>= tol)]
+    nzβ⁻ = primal.neg_beta_indices[find(getvalue(primal.neg_betas) .>= tol)]
+
+    nz∇⁺ = find(getvalue(primal.∇⁺) .>= tol)
+    nz∇⁻ = find(getvalue(primal.∇⁻) .>= tol)
+
+    β_abs = spzeros(p)
+    β_abs[primal.pos_beta_indices] += getvalue(primal.pos_betas)
+    β_abs[primal.neg_beta_indices] += getvalue(primal.neg_betas)
+
+    s_idx = round_small(β_abs .- G * getvalue(primal.βg), tol).nzind
+    v_idx = [gid for (gid, x) in
+             DantzigLP.split_by(getvalue(primal.∇⁺ + primal.∇⁻),
+                                primal.groups)
+             if sum(x) - λ .<= -tol]
+
+    # Solve dual model
+    solver = DantzigLP.construct_solver(; args...)
+    model = Model(solver=solver)
+
+    @variables model begin
+        s[1:p] ≤ 0
+        t[1:n]
+        u[1:p]
+        v[1:n_groups] ≤ 0
+
+        # Slack variables
+        ξ_β⁺[1:p] ≥ 0
+        ξ_β⁻[1:p] ≥ 0
+        ξ_∇⁺[1:p] ≥ 0
+        ξ_∇⁻[1:p] ≥ 0
+    end
+
+    @constraints model begin
+        s[s_idx] .== 0
+        v[v_idx] .== 0
+
+        ξ_β⁺[nzβ⁺] .== 0
+        ξ_β⁻[nzβ⁻] .== 0
+        ξ_∇⁺[nz∇⁺] .== 0
+        ξ_∇⁻[nz∇⁻] .== 0
+
+        s + X't + ξ_β⁺ .== 0
+        s - X't + ξ_β⁻ .== 0
+
+        -G's .== 1
+        t - X * u .== 0
+
+        u + G * v + ξ_∇⁺ .== 0
+        -u + G * v + ξ_∇⁻ .== 0
+    end
+
+    @objective(model, Max, 0)
+    # @objective(model, Max, t'y + λ * sum(v))
+
+    status = solve(model)
+    if status == :Optimal
+        return true
+    else
+        return false
+    end
+end
 
 # Group Lasso
 # ==============================================================================
@@ -333,9 +421,12 @@ end
 # ==============================================================================
 "Full LP implementation. For benchmarking and testing."
 function baseline_group_dantzig(X, y, g, λ; args...)
-    # TODO Assumes g has groups 1:k; shouldn't need this assumption
     n, p = size(X)
     k = length(unique(g))
+
+    g_map = Dict(zip(unique(g), 1:k))
+    groups = [g_map[gx] for gx in g]
+
     solver = construct_solver(; args...)
     model = Model(solver=solver)
 
@@ -349,21 +440,26 @@ function baseline_group_dantzig(X, y, g, λ; args...)
     end
 
     @constraints model begin
-        r .== y - X * (β⁺ - β⁻)
+        residual_constrs, r .== y - X * (β⁺ - β⁻)
         ∇⁺ .- ∇⁻ .== X'r
     end
 
+    βg_constrs = []
     for i in 1:k
-        group_jx = find(g .== i)
-        @constraint(model, βg[i] .≥ β⁺[group_jx] + β⁻[group_jx])
+        group_jx = find(groups .== i)
+        push!(βg_constrs,
+              @constraint(model, βg[i] .≥ β⁺[group_jx] + β⁻[group_jx]))
         @constraint(model, sum(∇⁺[group_jx] .+ ∇⁻[group_jx]) ≤ λ)
     end
 
     obj = @objective(model, Min, sum(βg))
-
     solve(model)
+
     β = sparse(getvalue(β⁺) .- getvalue(β⁻))
-    return β, model, nothing
+    gdmodel = GroupDantzigModel(
+        model, (n, p), β⁺, collect(1:p), β⁻, collect(1:p), r, ∇⁺, ∇⁻, βg,
+        residual_constrs, βg_constrs, collect(1:p), groups, X, y, λ)
+    return β, gdmodel, nothing
 end
 
 
