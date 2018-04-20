@@ -244,6 +244,9 @@ function group_check_dual_feas(primal; args...)
              DantzigLP.split_by(getvalue(primal.∇⁺ + primal.∇⁻),
                                 primal.groups)
              if sum(x) - λ .<= -tol]
+    u_groups = primal.∇_constr_indices
+    uc_groups = setdiff(1:n_groups, u_groups)
+    uc_idx = sparse(sum([G[:, j] for j in uc_groups])).nzind
 
     # Solve dual model
     solver = DantzigLP.construct_solver(; args...)
@@ -265,6 +268,7 @@ function group_check_dual_feas(primal; args...)
     @constraints model begin
         s[s_idx] .== 0
         v[v_idx] .== 0
+        u[uc_idx] .== 0
 
         ξ_β⁺[nzβ⁺] .== 0
         ξ_β⁻[nzβ⁻] .== 0
@@ -280,9 +284,6 @@ function group_check_dual_feas(primal; args...)
         u + G * v + ξ_∇⁺ .== 0
         -u + G * v + ξ_∇⁻ .== 0
     end
-
-    @objective(model, Max, 0)
-    # @objective(model, Max, t'y + λ * sum(v))
 
     status = solve(model)
     if status == :Optimal
