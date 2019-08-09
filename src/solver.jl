@@ -77,7 +77,7 @@ function solve_dantzig_lp!(model, λ, initial_soln;
     # --------------------------------------------------------------------------
     if isa(λ, Array)  # Solve a path of deltas
         solutions = []
-        for d in λ # TODO enforce an ordering of deltas
+        for d in λ
             for constr in model.linf_pos_constrs
                 JuMP.setRHS(constr, d)
             end
@@ -270,7 +270,6 @@ end
 
 function generate_constraints!(model::DantzigModel, delta,
                                max_constraints, tol)
-    # TODO should track the constraint indices so the tolerance won't matter
     n, p = model.size
 
     constraint_values = get_constraint_violations(model)

@@ -121,7 +121,6 @@ function get_reduced_costs(model::Union{BasicDantzigModel, BasisPursuitModel})
     # Compute reduced costs separately for the positive and negative
     # components of Beta
     # First n constraints correspond to the β constraints.
-    # TODO Shouldn't need to make this assumption....
     duals = model.gurobi_model.linconstrDuals[1:n]
     pos_reduced_costs = 1 + duals'model.X
     neg_reduced_costs = 1 - duals'model.X

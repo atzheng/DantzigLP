@@ -125,7 +125,6 @@ end
 
 function get_reduced_costs(model::DantzigTFModel)
     # First n constraints correspond to the α constraints.
-    # TODO Shouldn't need to make this assumption....
     n, p = model.size
     duals = model.gurobi_model.linconstrDuals[1:n]
     return (1 .+ duals, 1 .- duals)
@@ -175,10 +174,11 @@ function baseline_dantzig_tf(y, λ, k;
                            (:Crossover, ifelse(exact, -1, 0)),
                            (:BarConvTol, ifelse(exact, 1e-8, tol))])
     params_w_defaults = merge(default_params, solver_params)
+    print(params_w_defaults)
     solver = construct_solver(verbose = verbose,
                               tol = tol,
-                              timeout = timeout,
-                              params = params_w_defaults)
+                              timeout = timeout;
+                              params_w_defaults...)
 
     model = Model(solver=solver)
 

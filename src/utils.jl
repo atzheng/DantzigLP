@@ -13,7 +13,6 @@ Generate test regression problems.
 - `rho`: Correlation coefficient.
 - `sparsity`: Sparsity of the X matrix.
 
-TODO Add D matrix somehow
 """
 function regression_example(n::Integer, p::Integer, density;
                             SNR=10, binary=false, rho=0.0,
@@ -21,7 +20,7 @@ function regression_example(n::Integer, p::Integer, density;
     if binary
         X = sparse(round.(rand(n, p) * 0.6)) |> normalize_columns
     else
-        # TODO Tried sprandn, which is an order of magnitude slower
+        # Tried sprandn, which is an order of magnitude slower
         X = randn(n, p) |>
             A -> correlate(A, rho) |>
             A -> sparsify(A, sparsity) |>
@@ -118,7 +117,6 @@ end
 
 """
 Set `pct` of X values to be zero.
-TODO This is highly inefficient. Also maybe unnecessary
 """
 function sparsify(X, pct)
     if pct == 0
@@ -135,7 +133,6 @@ end
 
 """
 Modify X such that all columns have a pairwise correlation of rho.
-TODO Not sure if this preserves sparsity
 """
 function correlate(X, rho)
     n = size(X)[1]
