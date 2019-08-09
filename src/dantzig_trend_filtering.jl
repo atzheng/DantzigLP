@@ -20,8 +20,8 @@ function dantzig_tf(y, λ, k; return_α=false, lasso_tol=1e-9, rounding_tol=1e-8
     # TODO Doesn't work yet for λ path.
 
     args_dict = Dict(args)
-    colgen = get(args_dict, :column_generation, false)
-    congen = get(args_dict, :constraint_generation, false)
+    colgen = get(args_dict, :column_generation, true)
+    congen = get(args_dict, :constraint_generation, true)
     verbose = get(args_dict, :verbose, false)
     vinfo(msg) = verbose_info(verbose, msg)
 
