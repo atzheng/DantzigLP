@@ -54,22 +54,6 @@ function applyif(cond, fn, arg, args...)
 end
 
 
-function tf_example(n, k, knots; SNR=10, increasing=true)
-    # α_idx = vcat(sort(sample(1:(n - 1), knots, replace=false)), [n])
-    α_idx = sample(1:n, Int(knots), replace=false)
-    α = spzeros(n)
-    raw_α = randn(knots) * 10
-    α_values = raw_α
-    # α_values = max(raw_α, -shift(raw_α, 1))
-    α[α_idx] = α_values
-    β = reduce((x, i) -> tibs_M(n, i) * x, α, k:-1:0)
-
-    var_noise = var(β) / SNR
-    noise = randn(n) * sqrt(var_noise)
-    return (β + noise), β, α
-end
-
-
 function tibs_M(n::Number, k::Number)
     return tibs_M(Int(n), Int(k))
 end
