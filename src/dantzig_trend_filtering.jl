@@ -15,10 +15,18 @@ type DantzigTFModel <: DantzigModel
 end
 
 
+"""
+Runs `k`-order Dantzig trend filtering on a noisy signal `y`, with
+regularization coefficient `λ`. `k=0` corresponds to the fused Dantzig selector.
+
+Only solves for a single `λ` value; `λ` path not yet implemented. Accepts the
+same keyword arguments as `dantzig_lp`.
+
+# Additional arguments:
+- return_α: return the recovered (sparse) knots, instead of the recovered signal.
+"""
 function dantzig_tf(y, λ, k; return_α=false, lasso_tol=1e-9, rounding_tol=1e-8,
                     initial_soln=nothing, args...)
-    # TODO Doesn't work yet for λ path.
-
     args_dict = Dict(args)
     colgen = get(args_dict, :column_generation, true)
     congen = get(args_dict, :constraint_generation, true)

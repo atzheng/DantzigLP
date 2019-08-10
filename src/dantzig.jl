@@ -60,6 +60,33 @@ function baseline_dantzig(X, y, λ; args...)
 end
 
 
+"""
+Runs the Dantzig Selector with covariates `X` and response variables `y`, for
+regularization coefficient `λ`.
+
+`λ` may be either a scalar or a 1D array; the function will return either a
+single solution or an array of solutions. Due to warm-starting, calling
+`dantzig_lp` once for an array of `λ` values is more efficient than calling
+`dantzig_lp` separately for each `λ`.
+
+# Additional arguments:
+
+- `initializer_fn::Function`: function accepting `X` and `y` arguments that
+  returns an initial guess for the coefficents `β`.
+- `column_generation::Bool`: indicates whether to generate columns
+  (default: true)
+- `max_columns::Int`: maximum number of negative reduced cost columns to add
+  at each column generation iteration (default: 40).
+- `constraint_generation::Bool`: indicates whether to generate constraints
+  (default: true)
+- `max_constraints::Int`: maximum number of negative reduced cost constraints to
+  add at each constraint generation iteration (default: 40).
+- `verbose::Bool`: Enables detailed output.
+- `timeout::Int`: Maximum runtime in seconds (default: Inf).
+- `solver_params::Dict`: additional parameters provided to the solver.
+- `tol::Float`: columns are added if the reduced cost < -`tol`; constraints are
+  added if they are violated by more than `tol`.
+"""
 function dantzig_lp(X, y, λ; initializer_fn = lasso_initializer, args...)
     model = BasicDantzigModel(X, y)
     initial_soln, initializer_seconds = @timed initializer_fn(X, y, λ)

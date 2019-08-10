@@ -69,6 +69,10 @@ function log_range(minx, maxx, n)
 end
 
 
+"""
+Basis pursuit for covariates `X` and response variables `y`. Accepts the same
+keyword arguments as `dantzig_lp`
+"""
 function basis_pursuit(X, y; initializer_args=[], args...)
 
     args_dict = Dict(args)
